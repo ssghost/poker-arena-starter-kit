@@ -51,7 +51,7 @@ def claim() -> None:
         print(f"Failed to fetch status: {e}", file=sys.stderr)
 
 def rename() -> None:
-    new_name = str(input("new name: "))
+    new_name = str(input("new name: ")) or "sitara bot 01"
     new_quote = str(input("new quote: ")) or "probability over swagger"
     key, agent_id = load()
     print(f"Agent ID: {agent_id}")
