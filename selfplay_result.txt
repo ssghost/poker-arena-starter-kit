@@ -1,0 +1,25 @@
+[selfplay] hero=decide() from my_agent.py
+[selfplay] opponents=tight x1  players=2  stacks=200  blinds=1/2  seed=None
+[selfplay] playing 200 hands ...
+  ... 20/200 hands  net=+21 chips
+  ... 40/200 hands  net=+35 chips
+  ... 60/200 hands  net=+57 chips
+  ... 80/200 hands  net=+60 chips
+  ... 100/200 hands  net=+75 chips
+  ... 120/200 hands  net=+94 chips
+  ... 140/200 hands  net=+105 chips
+  ... 160/200 hands  net=+108 chips
+  ... 180/200 hands  net=+101 chips
+  ... 200/200 hands  net=+64 chips
+
+────────────────────────────────────────────────────────
+  hands       : 200
+  opponent    : tight x1
+  wins/losses : 152/48  (push: 0)
+  net chips   : +64
+  bb/100      : +16.0
+  elapsed     : 3.4s  (59 hands/s)
+────────────────────────────────────────────────────────
+
+  Reminder: this is vs SIMPLE local bots, NOT DeepCFR.
+  Confirm improvements with `pokerkit run --max-hands 50` on Arena.

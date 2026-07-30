@@ -18,7 +18,10 @@ dependencies = [
 # is set in the environment. OpenAI client also covers OpenAI-compatible
 # endpoints (OpenRouter, Together, Groq, vLLM) via OPENAI_BASE_URL.
 llm = ["anthropic>=0.40", "openai>=1.0"]
-dev = ["pytest>=8", "respx>=0.21"]
+dev = [
+    "pytest>=9.1.1",
+    "respx>=0.21",
+]
 
 # `pokerkit` branded CLI verb. Once you `uv pip install -e .` (or
 # `pip install arena-pokerkit`), the entry-point dispatches to

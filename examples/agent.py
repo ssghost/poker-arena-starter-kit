@@ -862,7 +862,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     if args.dry_run:
         # Late import: mock module is only loaded when --dry-run is set.
-        from mock import run_mock_benchmark
+        from examples.mock import run_mock_benchmark
         return run_mock_benchmark(args, decide_fn=decide_fn,
                                   retrieve_solver_context=retrieve_solver_context)
     return run_live_benchmark(args, decide_fn=decide_fn)
