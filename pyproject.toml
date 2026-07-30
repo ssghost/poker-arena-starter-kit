@@ -30,3 +30,6 @@ pokerkit = "examples.cli:main"
 
 [tool.uv]
 package = false
+
+[tool.setuptools.packages.find]
+where = ["."]
