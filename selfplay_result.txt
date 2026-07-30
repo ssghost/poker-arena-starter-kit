@@ -1,24 +1,24 @@
 [selfplay] hero=decide() from my_agent.py
 [selfplay] opponents=tight x1  players=2  stacks=200  blinds=1/2  seed=None
 [selfplay] playing 200 hands ...
-  ... 20/200 hands  net=+21 chips
-  ... 40/200 hands  net=+35 chips
-  ... 60/200 hands  net=+57 chips
-  ... 80/200 hands  net=+60 chips
-  ... 100/200 hands  net=+75 chips
-  ... 120/200 hands  net=+94 chips
-  ... 140/200 hands  net=+105 chips
-  ... 160/200 hands  net=+108 chips
-  ... 180/200 hands  net=+101 chips
-  ... 200/200 hands  net=+64 chips
+  ... 20/200 hands  net=+4 chips
+  ... 40/200 hands  net=+13 chips
+  ... 60/200 hands  net=+28 chips
+  ... 80/200 hands  net=+38 chips
+  ... 100/200 hands  net=+55 chips
+  ... 120/200 hands  net=+53 chips
+  ... 140/200 hands  net=+48 chips
+  ... 160/200 hands  net=+63 chips
+  ... 180/200 hands  net=+131 chips
+  ... 200/200 hands  net=+148 chips
 
 ────────────────────────────────────────────────────────
   hands       : 200
   opponent    : tight x1
-  wins/losses : 152/48  (push: 0)
-  net chips   : +64
-  bb/100      : +16.0
-  elapsed     : 3.4s  (59 hands/s)
+  wins/losses : 147/52  (push: 1)
+  net chips   : +148
+  bb/100      : +37.0
+  elapsed     : 2.6s  (76 hands/s)
 ────────────────────────────────────────────────────────
 
   Reminder: this is vs SIMPLE local bots, NOT DeepCFR.

@@ -1,4 +1,3 @@
-"""L2 GTO & Exploitative Monte Carlo Agent for Devfun Poker Arena."""
 from __future__ import annotations
 
 import sys
@@ -66,6 +65,10 @@ def decide(table: dict, deadline_s: float = 10.0,
     ctx = research_context or retrieve_solver_context(table)
     ev_margin = ctx.get("aggression_adjustment", 0.03)
 
+    bet_relative_to_pot = call_chips / max(pot, 1)
+    if bet_relative_to_pot > 0.5:
+        ev_margin += 0.05
+
     sims = 400 if deadline_s > 4.0 else 200
     equity = estimate_equity(hole, board, sims=sims, deadline_s=deadline_s)
     
@@ -122,7 +125,7 @@ def decide(table: dict, deadline_s: float = 10.0,
             else:
                 action_name = "fold"
         else:
-            if equity > 0.78 and allowed.get("canRaise"):
+            if equity > 0.80 and allowed.get("canRaise"):
                 rr = allowed.get("raiseRange") or {}
                 min_r = int(rr.get("min") or call_chips * 2)
                 max_r = int(rr.get("max") or min_r)
@@ -141,7 +144,7 @@ def decide(table: dict, deadline_s: float = 10.0,
     if action_name in ("fold", "check", "call"):
         amount = None
 
-    msg = f"L2 GTO/EV: Tier={tier}, Equity={equity:.2f}, PotOdds={pot_odds:.2f} -> {action_name}"
+    msg = f"L2 GTO/EV Anti-Drawdown: Tier={tier}, Equity={equity:.2f}, Margin={ev_margin:.2f} -> {action_name}"
     return _build(action_name, amount, table, allowed, eq=equity, po=pot_odds, msg=msg)
 
 
