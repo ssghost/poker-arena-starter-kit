@@ -75,5 +75,32 @@ def rename() -> None:
     except Exception as e:
         print(f"Failed to fetch status: {e}", file=sys.stderr)
 
+def list_competitions() -> None:
+    try:
+        response = httpx.get(f"{BASE_URL}/competition/list-active", timeout=10.0)
+        response.raise_for_status()
+        competitions = response.json()
+
+        if not isinstance(competitions, list):
+            print(f"Unexpected data form received: {competitions}.")
+            return []
+
+        for comp in competitions:
+            comp_id = comp.get("id", "N/A")
+            name = comp.get("name", "N/A")
+            season = comp.get("seasonNumber", "N/A")
+            game_type = comp.get("gameType", "N/A")
+
+            print(f"Name: {name} (Season {season})")
+            print(f"Type: {game_type}")
+            print(f"Competition ID: {comp_id}")
+
+    except httpx.HTTPStatusError as e:
+        print(f"HTTP Error {e.response.status_code}: {e.response.text}", file=sys.stderr)
+    except Exception as e:
+        print(f"Failed to fetch status: {e}", file=sys.stderr)
+
+    
+
 if __name__ == "__main__":
-    rename()
+    list_competitions()
