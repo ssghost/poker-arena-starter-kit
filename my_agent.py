@@ -12,8 +12,8 @@ from examples.agent import (
 
 _GTO_PREFLOP_TIERS = {
     "PREMIUM": {"AA", "KK", "QQ", "JJ", "TT", "AKs", "AKo", "AQs"},
-    "STRONG": {"99", "88", "77", "AQo", "AJs", "AJo", "ATs", "KQs", "KQo", "KJs"},
-    "PLAYABLE": {"66", "55", "44", "33", "22", "ATo", "KTs", "QJs", "JTs", "T9s", "98s", "87s"},
+    "STRONG": {"99", "88", "77", "AQo", "AJs", "AJo", "ATs", "KQs", "KQo", "KJs", "QJs"},
+    "PLAYABLE": {"66", "55", "44", "33", "22", "ATo", "KTs", "QTs", "JTs", "T9s", "98s", "87s", "76s", "KJo", "QJo"},
 }
 
 def _get_preflop_tier(cls: str) -> str:
@@ -32,6 +32,8 @@ def retrieve_solver_context(table: dict) -> dict:
     
     total_opponents = len(opponents)
     is_heads_up = (total_opponents == 1)
+    btn_seat = table.get("buttonSeatNumber")
+    in_position = (self_seat == btn_seat) or is_heads_up
     
     return {
         "is_heads_up": is_heads_up,
@@ -64,6 +66,7 @@ def decide(table: dict, deadline_s: float = 10.0,
 
     ctx = research_context or retrieve_solver_context(table)
     ev_margin = ctx.get("aggression_adjustment", 0.03)
+    in_pos = ctx.get("in_position", False)
 
     bet_relative_to_pot = call_chips / max(pot, 1)
     if bet_relative_to_pot > 0.5:
@@ -78,30 +81,36 @@ def decide(table: dict, deadline_s: float = 10.0,
     action_name: str
     amount: Optional[int] = None
 
-    # --- Preflop Logic (GTO Range Guided) ---
+    # --- Preflop Logic (Aggressive & Position-Aware) ---
     if not board:
         if call_chips == 0:
             if tier in ("PREMIUM", "STRONG") and allowed.get("canBet"):
                 br = allowed.get("betRange") or {}
                 min_b = int(br.get("min") or max(int(pot * 0.5), 1))
                 max_b = int(br.get("max") or min_b)
-                action_name, amount = "bet", max(min_b, min(int(pot * 0.66), max_b))
+                action_name, amount = "bet", max(min_b, min(int(pot * 0.75), max_b))
+            elif tier == "PLAYABLE" and in_pos and allowed.get("canBet"):
+                br = allowed.get("betRange") or {}
+                min_b = int(br.get("min") or max(int(pot * 0.5), 1))
+                max_b = int(br.get("max") or min_b)
+                action_name, amount = "bet", max(min_b, min(int(pot * 0.5), max_b))
             elif "check" in available:
                 action_name = "check"
             else:
                 action_name = "fold"
+
         else:
             if tier == "PREMIUM" and allowed.get("canRaise"):
                 rr = allowed.get("raiseRange") or {}
                 min_r = int(rr.get("min") or call_chips * 2)
                 max_r = int(rr.get("max") or min_r)
-                action_name, amount = "raise", max(min_r, min(int(pot * 0.75 + call_chips * 2), max_r))
+                action_name, amount = "raise", max(min_r, min(int(pot * 0.85 + call_chips * 2), max_r))
             elif tier in ("PREMIUM", "STRONG") and "call" in available:
                 action_name = "call"
                 cta = allowed.get("callToAmount")
                 if cta is not None:
                     amount = int(cta)
-            elif tier == "PLAYABLE" and pot_odds <= 0.25 and "call" in available:
+            elif tier == "PLAYABLE" and pot_odds <= 0.20 and in_pos and "call" in available:
                 action_name = "call"
                 cta = allowed.get("callToAmount")
                 if cta is not None:
@@ -111,27 +120,33 @@ def decide(table: dict, deadline_s: float = 10.0,
             else:
                 action_name = "fold"
 
-    # --- Postflop Logic (EV & Equity Guided) ---
+    # --- Postflop Logic (EV & Pot Odds Driven) ---
     else:
+        expected_value = (equity * (pot + call_chips)) - call_chips
+
         if call_chips == 0:
-            if equity >= 0.65 and allowed.get("canBet"):
+            if equity >= 0.75 and allowed.get("canBet"):
                 br = allowed.get("betRange") or {}
                 min_b = int(br.get("min") or max(int(pot * 0.5), 1))
                 max_b = int(br.get("max") or min_b)
-                target = max(min_b, min(int(pot * 0.66), max_b))
-                action_name, amount = "bet", target
+                action_name, amount = "bet", max(min_b, min(int(pot * 0.75), max_b))
+            elif equity >= 0.55 and allowed.get("canBet"):
+                br = allowed.get("betRange") or {}
+                min_b = int(br.get("min") or max(int(pot * 0.5), 1))
+                max_b = int(br.get("max") or min_b)
+                action_name, amount = "bet", max(min_b, min(int(pot * 0.50), max_b))
             elif "check" in available:
                 action_name = "check"
             else:
                 action_name = "fold"
+
         else:
-            if equity > 0.80 and allowed.get("canRaise"):
+            if equity >= 0.80 and allowed.get("canRaise"):
                 rr = allowed.get("raiseRange") or {}
                 min_r = int(rr.get("min") or call_chips * 2)
                 max_r = int(rr.get("max") or min_r)
-                target = max(min_r, min(int(pot * 0.75 + call_chips * 2), max_r))
-                action_name, amount = "raise", target
-            elif equity >= (pot_odds + ev_margin) and "call" in available:
+                action_name, amount = "raise", max(min_r, min(int(pot * 0.75 + call_chips * 2), max_r))
+            elif expected_value > 0 and equity >= (pot_odds + ev_margin) and "call" in available:
                 action_name = "call"
                 cta = allowed.get("callToAmount")
                 if cta is not None:
