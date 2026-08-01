@@ -39,7 +39,7 @@ from typing import Any, Optional
 
 from dotenv import load_dotenv
 
-from arena_client import (
+from examples.arena_client import (
     ArenaClient,
     ArenaError,
     DEFAULT_BASE,
