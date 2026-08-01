@@ -24,7 +24,6 @@ def _get_preflop_tier(cls: str) -> str:
 
 
 def retrieve_solver_context(table: dict) -> dict:
-    """Fetches table statistics to calculate opponent aggression profiles."""
     seats = table.get("seats") or []
     self_seat = table.get("selfSeatNumber")
     
