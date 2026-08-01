@@ -148,7 +148,7 @@ def decide(table: dict, deadline_s: float = 10.0,
     equity = _range_equity(hole, board, tight, deadline_s)
     has_draw = _is_draw(board, hole)
 
-    # --- C-BET ENGINE ---
+    # C-BET ENGINE
     if call_chips == 0:
         if allowed.get("canBet"):
 
