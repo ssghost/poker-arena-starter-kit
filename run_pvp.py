@@ -15,9 +15,8 @@ BASE_URL = "https://arena.dev.fun/api/arena"
 BIG_BLIND = 2
 DEFAULT_HANDS = 20
 PROGRESS_INTERVAL = 5
-WAIT_LOG_INTERVAL = 10
+WAIT_LOG_INTERVAL = 60
 REJOIN_INTERVAL = 100  
-
 
 def load_agent(agent_path: str):
     p = Path(agent_path).resolve()
@@ -35,13 +34,11 @@ def load_agent(agent_path: str):
 
     return mod.decide
 
-
 def load():
     if not CREDS_PATH.exists():
         print("Missing .arena-credentials")
         sys.exit(1)
     return json.loads(CREDS_PATH.read_text())["apiKey"]
-
 
 def get_stack(table: dict):
     self_seat = table.get("selfSeatNumber")
@@ -49,7 +46,6 @@ def get_stack(table: dict):
         if s.get("seatNumber") == self_seat:
             return int(s.get("stackChips") or 0)
     return 0
-
 
 def try_join(client, headers, competition_id):
     print("[arena] attempting to join competition...")
@@ -60,7 +56,7 @@ def try_join(client, headers, competition_id):
             json={"competitionId": competition_id},
         )
         if r.status_code == 200:
-            print("[arena] successfully joined competition.")
+            print("[arena] Joined the competition.")
         elif r.status_code == 400 and "already" in r.text.lower():
             print("[arena] already joined.")
         elif r.status_code == 409:
@@ -69,7 +65,6 @@ def try_join(client, headers, competition_id):
             print(f"[arena] join response: {r.status_code} {r.text}")
     except Exception as e:
         print(f"[arena] join failed: {e}")
-
 
 def leave_competition(client, headers, competition_id):
     try:
@@ -82,7 +77,6 @@ def leave_competition(client, headers, competition_id):
     except Exception as e:
         print(f"[arena] leave failed: {e}")
 
-
 def join_competition(client, headers, competition_id):
     try:
         client.post(
@@ -93,7 +87,6 @@ def join_competition(client, headers, competition_id):
         print("[arena] rejoined table")
     except Exception as e:
         print(f"[arena] rejoin failed: {e}")
-
 
 def run_pvp_loop(competition_id: str, decide_fn, max_hands: int):
     key = load()
@@ -111,8 +104,14 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int):
     net = 0
     start = time.time()
 
+    vpip_hands = 0
+    pfr_hands = 0
+    river_calls = 0
+    big_loss_hands = []
+
     prev_stack = None
     initial_stack = None
+    last_table_snapshot = None
 
     last_wait_log = time.time()
     last_rejoin_time = time.time()
@@ -150,6 +149,13 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int):
             table_id = table.get("tableId")
             stack = get_stack(table)
 
+            if stack < 20:
+                print(f"\n[ALERT] Low chips warning: stack = {stack} (< 20 chips).")
+                print("[ALERT] Exiting current table. Please rebuy chips manually.")
+                leave_competition(client, headers, competition_id)
+                client.close()
+                return
+
             if initial_stack is None and stack:
                 initial_stack = stack
                 prev_stack = stack
@@ -163,6 +169,16 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int):
                     wins += 1
                 elif diff < 0:
                     losses += 1
+                    if abs(diff) >= 50:
+                        big_loss_hands.append((hands, diff))
+                        if last_table_snapshot:
+                            with open("big_loss_hands.jsonl", "a", encoding="utf-8") as f:
+                                f.write(json.dumps({
+                                    "hand_num": hands,
+                                    "loss_chips": diff,
+                                    "timestamp": time.time(),
+                                    "table_snapshot": last_table_snapshot
+                                }, ensure_ascii=False) + "\n")
                 else:
                     pushes += 1
 
@@ -174,8 +190,20 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int):
             if not table.get("allowedActions"):
                 continue
 
+            last_table_snapshot = table
+
             action = decide_fn(table, deadline_s=5)
             action["tableId"] = table_id
+
+            act_name = str(action.get("action", "")).lower()
+            street = str(table.get("street", "")).lower()
+
+            if act_name in ["call", "bet", "raise", "all-in", "all_in"]:
+                vpip_hands += 1
+            if act_name in ["raise", "bet"]:
+                pfr_hands += 1
+            if street == "river" and act_name == "call":
+                river_calls += 1
 
             try:
                 client.post(
@@ -194,12 +222,19 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int):
     hands_per_sec = hands / elapsed if elapsed > 0 else 0
     bb100 = (net / hands * (100 / BIG_BLIND)) if hands else 0
 
+    vpip_pct = (vpip_hands / hands * 100) if hands else 0
+    pfr_pct = (pfr_hands / hands * 100) if hands else 0
+
     print(f"  hands       : {hands}")
     print(f"  opponent    : Arena Live")
     print(f"  wins/losses : {wins}/{losses}  (push: {pushes})")
     print(f"  net chips   : {net:+d}")
     print(f"  bb/100      : {bb100:+.1f}")
     print(f"  elapsed     : {elapsed:.1f}s  ({hands_per_sec:.2f} hands/s)")
+    print(f"  VPIP %      : {vpip_pct:.1f}% ({vpip_hands}/{hands})")
+    print(f"  PFR %       : {pfr_pct:.1f}% ({pfr_hands}/{hands})")
+    print(f"  River Calls : {river_calls}")
+    print(f"  Big Losses  : {len(big_loss_hands)} hands (>=50 chips loss: {big_loss_hands})")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

@@ -1,6 +1,6 @@
 import argparse
-import importlib.util
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -11,162 +11,140 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 CREDS_PATH = Path(".arena-credentials")
+ENV_PATH = Path(".env")
 BASE_URL = "https://arena.dev.fun/api/arena"
-BIG_BLIND = 2
-DEFAULT_HANDS = 20
-WAIT_LOG_INTERVAL = 10
+POLL_INTERVAL = 5
 
-def load_agent(agent_path: str):
-    p = Path(agent_path).resolve()
-    if not p.exists():
-        print(f"Agent file not found: {p}")
-        sys.exit(1)
-
-    spec = importlib.util.spec_from_file_location("user_agent", str(p))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-
-    if not hasattr(mod, "decide"):
-        print(f"{agent_path} does not define decide()")
-        sys.exit(1)
-
-    return mod.decide
+def load_gemini_key() -> str:
+    if ENV_PATH.exists():
+        for line in ENV_PATH.read_text().splitlines():
+            line = line.strip()
+            if line.startswith("GEMINI_API_KEY="):
+                return line.split("=", 1)[1].strip().strip("'\"")
+    key = os.getenv("GEMINI_API_KEY")
+    if key:
+        return key
+    print("[error] GEMINI_API_KEY not found.", file=sys.stderr)
+    sys.exit(1)
 
 
-def load():
+def load_credentials() -> tuple[str, str]:
     if not CREDS_PATH.exists():
-        print("Missing .arena-credentials")
+        print("[error] Missing .arena-credentials file.", file=sys.stderr)
         sys.exit(1)
-    return json.loads(CREDS_PATH.read_text())["apiKey"]
+    creds = json.loads(CREDS_PATH.read_text())
+    return creds.get("apiKey"), creds.get("agentId") or "Unknown"
 
 
-def start_eval_benchmark(client: httpx.Client, headers: dict, competition_id: str):
-    print("[arena] attempting to start eval benchmark...")
+def configure_sandbox_settings(client: httpx.Client, headers: dict, gemini_key: str):
+    print("[arena] Updating Gemini API Key...")
+    payload = {
+        "benchflowAgent": "gemini",
+        "modelName": "gemini-2.5-flash",
+        "credentials": {
+            "geminiApiKey": gemini_key
+        }
+    }
     try:
-        r = client.post(
-            f"{BASE_URL}/texas/benchmark/start",
-            headers=headers,
-            json={"competitionId": competition_id},
-        )
-        if r.status_code == 200:
-            print("[arena] successfully started eval benchmark.")
-            return r.json()
-        else:
-            print(f"[arena] start response: {r.status_code} {r.text}")
-            return None
-    except Exception as e:
-        print(f"[arena] start benchmark failed: {e}")
-        return None
+        r = client.put(f"{BASE_URL}/submissions/settings", headers=headers, json=payload, timeout=15.0)
+        r.raise_for_status()
+        res = r.json()
+        access = res.get("access", {}).get("sandboxBenchmark", {})
+        print(f"[arena] Sandbox Settings Updated!")
+        print(f"        Claimed: {access.get('claimed')} | XVerified: {access.get('xVerified')}")
+        print(f"        Status : {access.get('message')}")
+    except httpx.HTTPStatusError as e:
+        print(f"[error] Failed to update sandbox settings ({e.response.status_code}): {e.response.text}", file=sys.stderr)
+        sys.exit(1)
 
 
-def run_eval_loop(competition_id: str, decide_fn, max_hands: int):
-    key = load()
-    headers = {"x-arena-api-key": key, "Content-Type": "application/json"}
-    client = httpx.Client(timeout=20.0)
+def upload_agent_submission(client: httpx.Client, headers: dict, agent_path: str, competition_id: str) -> str:
+    file_p = Path(agent_path).resolve()
+    if not file_p.exists():
+        print(f"[error] Agent file not found: {file_p}", file=sys.stderr)
+        sys.exit(1)
 
-    start_eval_benchmark(client, headers, competition_id)
-
-    print(f"[arena] hero=decide()")
-    print(f"[arena] competition={competition_id}")
-    print(f"[arena] blinds=1/{BIG_BLIND}")
-    print(f"[arena] target hands={max_hands} ...")
-
-    start_time = time.time()
-    last_wait_log = time.time()
-
-    completed_hands = 0
-    raw_bb100 = 0.0
-    raw_chip_delta = 0
-
-    while completed_hands < max_hands:
+    print(f"[arena] Submitting {file_p.name} as strategy.py to competition {competition_id}...")
+    upload_headers = {"x-arena-api-key": headers["x-arena-api-key"]}
+    
+    with open(file_p, "rb") as f:
+        files = {"file": ("strategy.py", f, "text/x-python")}
+        data = {"competitionId": competition_id, "template": "static-agent"}
         try:
-            resp = client.get(
-                f"{BASE_URL}/texas/pending-actions",
-                params={"competitionId": competition_id},
-                headers=headers,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-        except Exception:
-            time.sleep(1)
+            r = client.post(f"{BASE_URL}/submissions", headers=upload_headers, data=data, files=files, timeout=30.0)
+            r.raise_for_status()
+            res = r.json()
+            sub_id = res.get("id")
+            print(f"[arena] Submission Created.")
+            print(f"        Submission ID: {sub_id}")
+            print(f"        Initial Status: {res.get('status')}")
+            return sub_id
+        except httpx.HTTPStatusError as e:
+            print(f"[error] Submission Upload Failed ({e.response.status_code}): {e.response.text}", file=sys.stderr)
+            sys.exit(1)
+
+
+def monitor_benchmark_progress(client: httpx.Client, headers: dict, competition_id: str):
+    print(f"[arena] Monitoring server-side benchmark progress for competition: {competition_id}...")
+    start_time = time.time()
+    last_completed = -1
+
+    while True:
+        try:
+            r = client.get(f"{BASE_URL}/texas/benchmark/status", params={"competitionId": competition_id}, headers=headers, timeout=15.0)
+            r.raise_for_status()
+            data = r.json()
+        except Exception as e:
+            print(f"[warning] Status poll error: {e}")
+            time.sleep(POLL_INTERVAL)
             continue
 
-        match_info = data.get("match") or {}
-        if match_info:
-            current_completed = match_info.get("completedHands", 0)
-            if current_completed != completed_hands:
-                completed_hands = current_completed
-                raw_chip_delta = match_info.get("rawChipDelta", 0)
-                raw_bb100 = match_info.get("rawBbPer100", 0.0)
-                print(
-                    f"  ... {completed_hands}/{max_hands} hands  net={raw_chip_delta:+d} chips  bb/100={raw_bb100:+.1f}"
-                )
+        match_info = data.get("match", {})
+        status = match_info.get("status")
+        phase = match_info.get("phase")
+        completed_hands = match_info.get("completedHands", 0)
+        target_hands = match_info.get("targetHands", 500)
+        raw_bb100 = match_info.get("rawBbPer100", 0.0)
+        adjusted_bb100 = match_info.get("adjustedBbPer100", 0.0)
 
-            if match_info.get("status") in ["Completed", "Failed", "Cancelled"]:
-                print(f"[arena] benchmark session status: {match_info.get('status')}")
-                break
+        if completed_hands != last_completed:
+            last_completed = completed_hands
+            print(f"  ... [{completed_hands}/{target_hands} hands] status={status} phase={phase} raw_bb100={raw_bb100:+.1f} adjusted_bb100={adjusted_bb100:+.1f}")
 
-        tables = data.get("tables", [])
+        if status in ["Completed", "Failed", "Cancelled", "Succeeded", "TimedOut"]:
+            elapsed = time.time() - start_time
+            print(f"  Final Status   : {status}")
+            print(f"  Completed Hands: {completed_hands}/{target_hands}")
+            print(f"  Raw bb/100     : {raw_bb100:+.1f}")
+            print(f"  Adjusted bb100 : {adjusted_bb100:+.1f}")
+            print(f"  Total Elapsed  : {elapsed:.1f}s")
+            break
 
-        if not tables:
-            if time.time() - last_wait_log > WAIT_LOG_INTERVAL:
-                print("[arena] waiting for panel / table action...")
-                last_wait_log = time.time()
-            time.sleep(0.5)
-            continue
+        time.sleep(POLL_INTERVAL)
 
-        for table in tables:
-            table_id = table.get("tableId")
-            if not table.get("allowedActions"):
-                continue
 
-            action = decide_fn(table, deadline_s=5)
-            action["tableId"] = table_id
-
-            try:
-                client.post(
-                    f"{BASE_URL}/texas/action",
-                    headers=headers,
-                    json=action,
-                )
-            except Exception:
-                continue
-
-        time.sleep(0.2)
-
-    client.close()
-    elapsed = time.time() - start_time
-    hands_per_sec = completed_hands / elapsed if elapsed > 0 else 0
-
-    print("\n" + "=" * 40)
-    print(f"  hands       : {completed_hands}")
-    print(f"  opponent    : Reference Panel (PVE)")
-    print(f"  net chips   : {raw_chip_delta:+d}")
-    print(f"  bb/100      : {raw_bb100:+.1f}")
-    print(f"  elapsed     : {elapsed:.1f}s  ({hands_per_sec:.2f} hands/s)")
-    print("=" * 40)
-
+def run_eval_loop(competition_id: str, agent_path: str):
+    gemini_key = load_gemini_key()
+    api_key, _ = load_credentials()
+    headers = {"x-arena-api-key": api_key, "Content-Type": "application/json"}
+    
+    with httpx.Client(timeout=30.0) as client:
+        configure_sandbox_settings(client, headers, gemini_key)
+        
+        upload_agent_submission(client, headers, agent_path, competition_id)
+        
+        monitor_benchmark_progress(client, headers, competition_id)
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run Poker PVE Eval Benchmark")
+    parser = argparse.ArgumentParser(description="Submit Agent and Run Server-Hosted Gemini Eval Benchmark")
     parser.add_argument(
         "--competition-id",
         default="seed_poker_eval_s1",
-        help="Competition ID for Eval (default: seed_poker_eval_s1)",
     )
-    parser.add_argument("--agent", default="my_agent.py", help="Path to agent script")
     parser.add_argument(
-        "--max-hands",
-        type=int,
-        default=DEFAULT_HANDS,
-        help="Target hands to play",
+        "--agent",
+        default="my_agent_s11_v1.py",
     )
     args = parser.parse_args()
 
-    decide_fn = load_agent(args.agent)
-
-    run_eval_loop(
-        competition_id=args.competition_id,
-        decide_fn=decide_fn,
-        max_hands=args.max_hands,
-    )
+    run_eval_loop(competition_id=args.competition_id, agent_path=args.agent)

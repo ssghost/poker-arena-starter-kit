@@ -155,4 +155,4 @@ def rebuy(competition_id: str = "cms7hrnjg20czv7oi85cho570") -> None:
         print(f"Rebuy execution failed: {e}", file=sys.stderr)
 
 if __name__ == "__main__":
-    rebuy()
+    check_status()
