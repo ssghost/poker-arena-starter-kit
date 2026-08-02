@@ -12,18 +12,17 @@ from examples.agent import (
 DEEP_STACK_BB = 200
 SHORT_STACK_BB = 25
 
-# ✅ 微調：壓縮 deep 風險，但不過度
-DEEP_MAX_RISK = 0.20
+DEEP_MAX_RISK = 0.25
 STD_MAX_RISK = 0.40
 
 STACK_OFF_REQ_STD = 0.88
-STACK_OFF_REQ_DEEP = 0.95   # 提高
+STACK_OFF_REQ_DEEP = 0.93
 
 RIVER_MARGIN_STD = 0.18
-RIVER_MARGIN_DEEP = 0.30    # 提高
+RIVER_MARGIN_DEEP = 0.25
 
 OVERBET_REQ_STD = 0.75
-OVERBET_REQ_DEEP = 0.88     # 略提高
+OVERBET_REQ_DEEP = 0.85
 
 PREMIUM = {"AA", "KK", "QQ", "JJ", "AKs", "AKo"}
 STRONG = {"TT", "99", "AQs", "AQo", "AJs", "KQs"}
@@ -87,15 +86,14 @@ def decide(table: dict, deadline_s: float = 10.0,
         stack_off_req = STACK_OFF_REQ_DEEP
         river_margin = RIVER_MARGIN_DEEP
         overbet_req = OVERBET_REQ_DEEP
-        deep_mode = True
     else:
         max_risk = STD_MAX_RISK
         stack_off_req = STACK_OFF_REQ_STD
         river_margin = RIVER_MARGIN_STD
         overbet_req = OVERBET_REQ_STD
-        deep_mode = False
 
-    # SHORT STACK
+    # SHORT STACK PUSH/FOLD
+
     if not board and stack_bb <= SHORT_STACK_BB:
         if t in ("P","S","M") and allowed.get("canRaise"):
             rr = allowed.get("raiseRange") or {}
@@ -146,6 +144,7 @@ def decide(table: dict, deadline_s: float = 10.0,
                       eq=equity, po=pot_odds, msg="Fold PF")
 
     # POSTFLOP
+
     equity = estimate_equity(hole, board, sims=700, deadline_s=deadline_s)
     draw = is_draw(board, hole)
     is_river = len(board) == 5
@@ -165,7 +164,6 @@ def decide(table: dict, deadline_s: float = 10.0,
             return _build("fold", None, table, allowed,
                           eq=equity, po=pot_odds, msg="Overbet fold")
 
-        # ✅ Deep 模式更嚴 stack off
         if equity > stack_off_req and allowed.get("canRaise"):
             rr = allowed.get("raiseRange") or {}
             min_r = int(rr.get("min") or call_chips*2)
@@ -183,7 +181,8 @@ def decide(table: dict, deadline_s: float = 10.0,
 
     if allowed.get("canBet"):
 
-        if deep_mode:
+        # Deep stack value control
+        if stack_bb > DEEP_STACK_BB:
             if equity > 0.85:
                 br = allowed.get("betRange") or {}
                 min_b = int(br.get("min") or pot//2 or 1)
@@ -192,6 +191,15 @@ def decide(table: dict, deadline_s: float = 10.0,
                 return _build("bet", size, table, allowed,
                               eq=equity, po=0, msg="Deep value")
 
+            if draw and 0.35 <= equity <= 0.65:
+                br = allowed.get("betRange") or {}
+                min_b = int(br.get("min") or pot//3 or 1)
+                max_b = int(br.get("max") or min_b)
+                size = min(max_b, max(min_b, int(pot*0.5)))
+                return _build("bet", size, table, allowed,
+                              eq=equity, po=0, msg="Deep semi")
+
+        # Standard mode
         else:
             if equity > 0.80:
                 br = allowed.get("betRange") or {}
@@ -200,6 +208,14 @@ def decide(table: dict, deadline_s: float = 10.0,
                 size = min(max_b, max(min_b, int(pot*0.9)))
                 return _build("bet", size, table, allowed,
                               eq=equity, po=0, msg="Value")
+
+            if draw and 0.35 <= equity <= 0.65:
+                br = allowed.get("betRange") or {}
+                min_b = int(br.get("min") or pot//3 or 1)
+                max_b = int(br.get("max") or min_b)
+                size = min(max_b, max(min_b, int(pot*0.6)))
+                return _build("bet", size, table, allowed,
+                              eq=equity, po=0, msg="Semi")
 
         if random.random() < (0.65 if in_pos else 0.45):
             br = allowed.get("betRange") or {}
