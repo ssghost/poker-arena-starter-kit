@@ -2,6 +2,7 @@ import argparse
 import json
 import sys
 import time
+import importlib.util
 from pathlib import Path
 import httpx
 
@@ -9,13 +10,31 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from my_agent import decide
-
 CREDS_PATH = Path(".arena-credentials")
 BASE_URL = "https://arena.dev.fun/api/arena"
 BIG_BLIND = 2
 DEFAULT_HANDS = 20
 PROGRESS_INTERVAL = 5
+WAIT_LOG_INTERVAL = 10
+REJOIN_INTERVAL = 100  
+
+
+def load_agent(agent_path: str):
+    p = Path(agent_path).resolve()
+    if not p.exists():
+        print(f"Agent file not found: {p}")
+        sys.exit(1)
+
+    spec = importlib.util.spec_from_file_location("user_agent", str(p))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    if not hasattr(mod, "decide"):
+        print(f"{agent_path} does not define decide()")
+        sys.exit(1)
+
+    return mod.decide
+
 
 def load():
     if not CREDS_PATH.exists():
@@ -31,12 +50,58 @@ def get_stack(table: dict):
             return int(s.get("stackChips") or 0)
     return 0
 
-def run_pvp_loop(competition_id: str, max_hands: int = DEFAULT_HANDS):
+
+def try_join(client, headers, competition_id):
+    print("[arena] attempting to join competition...")
+    try:
+        r = client.post(
+            f"{BASE_URL}/texas/join",
+            headers=headers,
+            json={"competitionId": competition_id},
+        )
+        if r.status_code == 200:
+            print("[arena] successfully joined competition.")
+        elif r.status_code == 400 and "already" in r.text.lower():
+            print("[arena] already joined.")
+        elif r.status_code == 409:
+            print("[arena] already seated (table limit).")
+        else:
+            print(f"[arena] join response: {r.status_code} {r.text}")
+    except Exception as e:
+        print(f"[arena] join failed: {e}")
+
+
+def leave_competition(client, headers, competition_id):
+    try:
+        client.post(
+            f"{BASE_URL}/texas/leave",
+            headers=headers,
+            json={"competitionId": competition_id},
+        )
+        print("[arena] left table")
+    except Exception as e:
+        print(f"[arena] leave failed: {e}")
+
+
+def join_competition(client, headers, competition_id):
+    try:
+        client.post(
+            f"{BASE_URL}/texas/join",
+            headers=headers,
+            json={"competitionId": competition_id},
+        )
+        print("[arena] rejoined table")
+    except Exception as e:
+        print(f"[arena] rejoin failed: {e}")
+
+
+def run_pvp_loop(competition_id: str, decide_fn, max_hands: int):
     key = load()
     headers = {"x-arena-api-key": key}
     client = httpx.Client(timeout=20.0)
+    try_join(client, headers, competition_id)
 
-    print(f"[arena] hero=decide() from my_agent.py")
+    print(f"[arena] hero=decide()")
     print(f"[arena] competition={competition_id}")
     print(f"[arena] blinds=1/{BIG_BLIND}")
     print(f"[arena] playing {max_hands} hands ...")
@@ -49,7 +114,17 @@ def run_pvp_loop(competition_id: str, max_hands: int = DEFAULT_HANDS):
     prev_stack = None
     initial_stack = None
 
+    last_wait_log = time.time()
+    last_rejoin_time = time.time()
+
     while hands < max_hands:
+        if time.time() - last_rejoin_time > REJOIN_INTERVAL:
+            print("[arena] 100s elapsed → force rejoin")
+            leave_competition(client, headers, competition_id)
+            time.sleep(2)
+            join_competition(client, headers, competition_id)
+            last_rejoin_time = time.time()
+
         try:
             resp = client.get(
                 f"{BASE_URL}/texas/pending-actions",
@@ -58,29 +133,27 @@ def run_pvp_loop(competition_id: str, max_hands: int = DEFAULT_HANDS):
             )
             resp.raise_for_status()
             data = resp.json()
-        except httpx.RemoteProtocolError:
-            client.close()
-            client = httpx.Client(timeout=20.0)
-            continue
         except Exception:
-            time.sleep(0.5)
+            time.sleep(1)
             continue
 
         tables = data.get("tables", [])
+
         if not tables:
-            time.sleep(0.3)
+            if time.time() - last_wait_log > WAIT_LOG_INTERVAL:
+                print("[arena] waiting for table / opponent...")
+                last_wait_log = time.time()
+            time.sleep(1)
             continue
 
         for table in tables:
             table_id = table.get("tableId")
-
             stack = get_stack(table)
 
             if initial_stack is None and stack:
                 initial_stack = stack
                 prev_stack = stack
 
-            # hand ends when board resets
             if prev_stack is not None and stack != prev_stack and table.get("boardCards") == []:
                 diff = stack - prev_stack
                 hands += 1
@@ -101,7 +174,7 @@ def run_pvp_loop(competition_id: str, max_hands: int = DEFAULT_HANDS):
             if not table.get("allowedActions"):
                 continue
 
-            action = decide(table, deadline_s=5)
+            action = decide_fn(table, deadline_s=5)
             action["tableId"] = table_id
 
             try:
@@ -110,12 +183,10 @@ def run_pvp_loop(competition_id: str, max_hands: int = DEFAULT_HANDS):
                     headers=headers,
                     json=action,
                 )
-            except httpx.RemoteProtocolError:
-                client.close()
-                client = httpx.Client(timeout=20.0)
+            except Exception:
                 continue
 
-        time.sleep(0.25)
+        time.sleep(0.3)
 
     client.close()
 
@@ -133,7 +204,14 @@ def run_pvp_loop(competition_id: str, max_hands: int = DEFAULT_HANDS):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--competition-id", required=True)
+    parser.add_argument("--agent", default="my_agent.py")
     parser.add_argument("--max-hands", type=int, default=DEFAULT_HANDS)
     args = parser.parse_args()
 
-    run_pvp_loop(args.competition_id, args.max_hands)
+    decide_fn = load_agent(args.agent)
+
+    run_pvp_loop(
+        competition_id=args.competition_id,
+        decide_fn=decide_fn,
+        max_hands=args.max_hands,
+    )
