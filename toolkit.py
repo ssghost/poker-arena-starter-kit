@@ -31,7 +31,7 @@ def claim() -> None:
     print("Requesting claim URL...")
     try:
         response = httpx.get(
-            "{BASE_URL}/auth/claim/status",
+            f"{BASE_URL}/auth/claim/status",
             headers={"x-arena-api-key": key},
             timeout=10.0,
         )
@@ -43,7 +43,7 @@ def claim() -> None:
             print(f"Claim Link: {claim_url}")
             print("Please open the link above to verify your account.")
         else:
-            print("No claimUrl field found: {data}")
+            print(f"No claimUrl field found: {data}")
 
     except httpx.HTTPStatusError as e:
         print(f"HTTP Error {e.response.status_code}: {e.response.text}", file=sys.stderr)
@@ -67,7 +67,6 @@ def rename() -> None:
             timeout=10.0,
         )
         response.raise_for_status()
-        data = response.json()
 
         print(f"Agent profile updated with new name {new_name}, new quote {new_quote}.")
     except httpx.HTTPStatusError as e:
@@ -100,7 +99,60 @@ def list_competitions() -> None:
     except Exception as e:
         print(f"Failed to fetch status: {e}", file=sys.stderr)
 
-    
+def check_status(competition_id: str = "cms7hrnjg20czv7oi85cho570") -> None:
+    key, _ = load()
+    headers = {"x-arena-api-key": key, "Content-Type": "application/json"}
+    url = f"{BASE_URL}/texas/pending-actions?competitionId={competition_id}"
+
+    try:
+        response = httpx.get(url, headers=headers)
+        response.raise_for_status()
+        data = response.json()
+
+        participant = data.get("participant", {})
+        chip_state = participant.get("chipState", "unknown")
+        total_chips = participant.get("totalChips", 0)
+
+        print(f"[Status Check] Competition: {competition_id}")
+        print(f" Chip State  : {chip_state}")
+        print(f" Total Chips : {total_chips}")
+        print(f" Bankroll    : {participant.get('bankrollChips', 0)}")
+        print(f" Table Chips : {participant.get('tableChips', 0)}")
+
+    except Exception as e:
+        print(f"Failed to fetch participant status: {e}", file=sys.stderr)
+
+def rebuy(competition_id: str = "cms7hrnjg20czv7oi85cho570") -> None:
+    key, _ = load()
+    headers = {"x-arena-api-key": key, "Content-Type": "application/json"}
+    status_url = f"{BASE_URL}/texas/rebuy-status?competitionId={competition_id}"
+    try:
+        status_resp = httpx.get(status_url, headers=headers)
+        status_resp.raise_for_status()
+        status_data = status_resp.json()
+
+        can_rebuy = status_data.get("canRebuyNow", False)
+        reason = status_data.get("cannotRebuyReason")
+
+        if not can_rebuy:
+            print(f"Rebuy Unavailable: {reason}")
+            return False
+
+        rebuy_url = f"{BASE_URL}/texas/rebuy"
+        rebuy_resp = httpx.post(
+            rebuy_url, headers=headers, json={"competitionId": competition_id}
+        )
+        rebuy_resp.raise_for_status()
+        rebuy_result = rebuy_resp.json()
+
+        participant = rebuy_result.get("participant", {})
+        new_state = participant.get("chipState")
+        new_total = participant.get("totalChips")
+
+        print(f"[Rebought chips] New State: {new_state} | Total Chips: {new_total}")
+
+    except Exception as e:
+        print(f"Rebuy execution failed: {e}", file=sys.stderr)
 
 if __name__ == "__main__":
-    list_competitions()
+    rebuy()

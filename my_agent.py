@@ -12,18 +12,18 @@ from examples.agent import (
 DEEP_STACK_BB = 200
 SHORT_STACK_BB = 25
 
-# ✅ 保持原風格，只微調 deep
-DEEP_MAX_RISK = 0.25
-STD_MAX_RISK = 0.40
+# ✅ 保留 v1 結構，只加強風險控制
+DEEP_MAX_RISK = 0.20        # 原 0.25 → 降低
+STD_MAX_RISK = 0.35         # 原 0.40 → 略降
 
-STACK_OFF_REQ_STD = 0.88
-STACK_OFF_REQ_DEEP = 0.94  # 原 0.93 → 稍提高
+STACK_OFF_REQ_STD = 0.90    # 原 0.88 → 提高
+STACK_OFF_REQ_DEEP = 0.96   # 原 0.93 → 明顯提高
 
-RIVER_MARGIN_STD = 0.18
-RIVER_MARGIN_DEEP = 0.30   # 原 0.25 → 提高
+RIVER_MARGIN_STD = 0.22     # 原 0.18 → 提高
+RIVER_MARGIN_DEEP = 0.32    # 原 0.25 → 提高
 
-OVERBET_REQ_STD = 0.75
-OVERBET_REQ_DEEP = 0.90    # 原 0.85 → 提高
+OVERBET_REQ_STD = 0.82      # 原 0.75 → 提高
+OVERBET_REQ_DEEP = 0.92     # 原 0.85 → 提高
 
 PREMIUM = {"AA", "KK", "QQ", "JJ", "AKs", "AKo"}
 STRONG = {"TT", "99", "AQs", "AQo", "AJs", "KQs"}
@@ -52,14 +52,13 @@ def is_draw(board, hole):
             return True
     return False
 
-def board_dangerous(board):
+def board_is_wet(board):
     if len(board) < 3:
         return False
     suits = [c[-1] for c in board]
-    # 3 same suit or paired board considered dangerous
+    ranks = [c[0] for c in board]
     if max(suits.count(s) for s in suits) >= 3:
         return True
-    ranks = [c[0] for c in board]
     if len(set(ranks)) < len(ranks):
         return True
     return False
@@ -94,9 +93,7 @@ def decide(table: dict, deadline_s: float = 10.0,
     cls = _hand_class(hole)
     t = tier(cls)
 
-    deep_mode = stack_bb > DEEP_STACK_BB
-
-    if deep_mode:
+    if stack_bb > DEEP_STACK_BB:
         max_risk = DEEP_MAX_RISK
         stack_off_req = STACK_OFF_REQ_DEEP
         river_margin = RIVER_MARGIN_DEEP
@@ -162,10 +159,11 @@ def decide(table: dict, deadline_s: float = 10.0,
     draw = is_draw(board, hole)
     is_river = len(board) == 5
     overbet = call_chips > pot
-    dangerous = board_dangerous(board)
+    wet_board = board_is_wet(board)
 
     if call_chips > 0:
 
+        # ✅ 嚴格風險限制
         if risk_ratio > max_risk and equity < stack_off_req:
             return _build("fold", None, table, allowed,
                           eq=equity, po=pot_odds, msg="Risk fold")
@@ -178,8 +176,8 @@ def decide(table: dict, deadline_s: float = 10.0,
             return _build("fold", None, table, allowed,
                           eq=equity, po=pot_odds, msg="Overbet fold")
 
-        # ✅ Deep 模式僅在非危險 board 才 stack off
-        if equity > stack_off_req and not (deep_mode and dangerous) and allowed.get("canRaise"):
+        # ✅ 不在濕板面 stack off
+        if equity > stack_off_req and not wet_board and allowed.get("canRaise"):
             rr = allowed.get("raiseRange") or {}
             min_r = int(rr.get("min") or call_chips*2)
             max_r = int(rr.get("max") or min_r)
@@ -196,26 +194,34 @@ def decide(table: dict, deadline_s: float = 10.0,
 
     if allowed.get("canBet"):
 
-        if deep_mode:
-            # ✅ Deep 中強牌不再 build 大 pot
+        if stack_bb > DEEP_STACK_BB:
+            # ✅ 深碼只在極強牌 build pot
             if equity > 0.90:
                 br = allowed.get("betRange") or {}
                 min_b = int(br.get("min") or pot//2 or 1)
                 max_b = int(br.get("max") or min_b)
-                size = min(max_b, max(min_b, int(pot*0.8)))
+                size = min(max_b, max(min_b, int(pot*0.75)))
                 return _build("bet", size, table, allowed,
                               eq=equity, po=0, msg="Deep value")
 
         else:
-            if equity > 0.80:
+            if equity > 0.82:
                 br = allowed.get("betRange") or {}
                 min_b = int(br.get("min") or pot//2 or 1)
                 max_b = int(br.get("max") or min_b)
-                size = min(max_b, max(min_b, int(pot*0.9)))
+                size = min(max_b, max(min_b, int(pot*0.85)))
                 return _build("bet", size, table, allowed,
                               eq=equity, po=0, msg="Value")
 
-        if random.random() < (0.65 if in_pos else 0.45):
+        if draw and 0.35 <= equity <= 0.65:
+            br = allowed.get("betRange") or {}
+            min_b = int(br.get("min") or pot//3 or 1)
+            max_b = int(br.get("max") or min_b)
+            size = min(max_b, max(min_b, int(pot*0.5)))
+            return _build("bet", size, table, allowed,
+                          eq=equity, po=0, msg="Semi")
+
+        if random.random() < (0.6 if in_pos else 0.4):
             br = allowed.get("betRange") or {}
             min_b = int(br.get("min") or pot//3 or 1)
             max_b = int(br.get("max") or min_b)
