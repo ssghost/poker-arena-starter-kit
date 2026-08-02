@@ -127,12 +127,10 @@ def run_dual(agent_a: str, agent_b: str, hands: int, seed: Optional[int]):
     bb100_a = (net_a / big_blind) / hands * 100
     bb100_b = -bb100_a
 
-    print("\n" + "─" * 56)
     print(f"  Agent A bb/100 : {bb100_a:+.1f}")
     print(f"  Agent B bb/100 : {bb100_b:+.1f}")
     print(f"  net A chips    : {net_a:+d}")
     print(f"  elapsed        : {elapsed:.1f}s")
-    print("─" * 56)
 
 def main():
     parser = argparse.ArgumentParser()
