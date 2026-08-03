@@ -4,9 +4,8 @@ import argparse
 import importlib.util
 import random
 import time
-import json
 from pathlib import Path
-from typing import Callable, Optional, List
+from typing import Callable, Optional
 
 from pokerkit import (  # type: ignore
     Automation,
@@ -16,8 +15,6 @@ from pokerkit import (  # type: ignore
 
 from examples.selfplay import _build_table, _apply_action
 
-BIG_LOSS_THRESHOLD = -50
-BIG_LOSS_FILE = "big_loss_dual.jsonl"  
 
 def load_decide(path: str) -> Callable:
     p = Path(path).resolve()
@@ -32,6 +29,7 @@ def load_decide(path: str) -> Callable:
         raise SystemExit(f"{p} does not define decide()")
 
     return mod.decide
+
 
 def play_one_hand(
     decide_a: Callable,
@@ -112,26 +110,13 @@ def play_one_hand(
     stats["hands"] += 1
     stats["deltas"].append(delta)
 
-    if delta <= BIG_LOSS_THRESHOLD:
-        record = {
-            "hand_id": hand_id,
-            "delta": delta,
-            "hero_position": hero_a_index,
-            "starting_stack": starting_stack,
-            "final_stack": int(state.stacks[hero_a_index]),
-            "opponent_final_stack": int(state.stacks[1 - hero_a_index]),
-        }
-        with open(BIG_LOSS_FILE, "a") as f:
-            f.write(json.dumps(record) + "\n")
-
     return delta
+
 
 def run_dual(agent_a: str, agent_b: str, hands: int, seed: Optional[int]):
 
     if seed is not None:
         random.seed(seed)
-
-    Path(BIG_LOSS_FILE).write_text("")
 
     decide_a = load_decide(agent_a)
     decide_b = load_decide(agent_b)
@@ -187,10 +172,9 @@ def run_dual(agent_a: str, agent_b: str, hands: int, seed: Optional[int]):
     print(f"VPIP %              : {vpip_pct:.1f}")
     print(f"PFR %               : {pfr_pct:.1f}")
     print(f"River Calls %       : {river_call_pct:.1f}")
-    print(f"Big losses saved to : {BIG_LOSS_FILE}")
     print(f"elapsed             : {elapsed:.1f}s")
 
-def main():
+if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--agent-a", required=True)
     parser.add_argument("--agent-b", required=True)
@@ -199,6 +183,3 @@ def main():
     args = parser.parse_args()
 
     run_dual(args.agent_a, args.agent_b, args.hands, args.seed)
-
-if __name__ == "__main__":
-    main()
