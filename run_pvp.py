@@ -15,8 +15,8 @@ BASE_URL = "https://arena.dev.fun/api/arena"
 BIG_BLIND = 2
 DEFAULT_HANDS = 20
 PROGRESS_INTERVAL = 5
-WAIT_LOG_INTERVAL = 60
-REJOIN_INTERVAL = 100  
+WAIT_LOG_INTERVAL = 150
+REJOIN_INTERVAL = 300  
 
 def load_agent(agent_path: str):
     p = Path(agent_path).resolve()
@@ -118,7 +118,7 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int):
 
     while hands < max_hands:
         if time.time() - last_rejoin_time > REJOIN_INTERVAL:
-            print("[arena] 100s elapsed → force rejoin")
+            print("[arena] 300s elapsed → force rejoin")
             leave_competition(client, headers, competition_id)
             time.sleep(2)
             join_competition(client, headers, competition_id)

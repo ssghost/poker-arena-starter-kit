@@ -4,8 +4,9 @@ import argparse
 import importlib.util
 import random
 import time
+import json
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Optional, List
 
 from pokerkit import (  # type: ignore
     Automation,
@@ -14,6 +15,9 @@ from pokerkit import (  # type: ignore
 )
 
 from examples.selfplay import _build_table, _apply_action
+
+BIG_LOSS_THRESHOLD = -50
+BIG_LOSS_FILE = "big_loss_dual.jsonl"  
 
 def load_decide(path: str) -> Callable:
     p = Path(path).resolve()
@@ -36,8 +40,9 @@ def play_one_hand(
     small_blind: int,
     big_blind: int,
     hero_a_index: int,
+    stats: dict,
+    hand_id: int,
 ) -> int:
-
     stacks = [starting_stack, starting_stack]
 
     state: State = NoLimitTexasHoldem.create_state(
@@ -62,9 +67,12 @@ def play_one_hand(
         player_count=2,
     )
 
+    hero_vpip = False
+    hero_pfr = False
+    hero_river_call = False
+
     while state.status and state.actor_index is not None:
         actor = state.actor_index
-
         fn = decide_a if actor == hero_a_index else decide_b
 
         table = _build_table(
@@ -84,19 +92,51 @@ def play_one_hand(
         if not isinstance(action, dict):
             action = {"action": "fold"}
 
+        if actor == hero_a_index:
+            if action.get("action") in ("call", "bet", "raise"):
+                if table["street"] == "Preflop":
+                    hero_vpip = True
+            if action.get("action") in ("bet", "raise"):
+                if table["street"] == "Preflop":
+                    hero_pfr = True
+            if action.get("action") == "call" and table["street"] == "River":
+                hero_river_call = True
+
         _apply_action(state, action, big_blind)
 
-    return int(state.stacks[hero_a_index]) - starting_stack
+    delta = int(state.stacks[hero_a_index]) - starting_stack
+
+    stats["vpip"] += int(hero_vpip)
+    stats["pfr"] += int(hero_pfr)
+    stats["river_calls"] += int(hero_river_call)
+    stats["hands"] += 1
+    stats["deltas"].append(delta)
+
+    if delta <= BIG_LOSS_THRESHOLD:
+        record = {
+            "hand_id": hand_id,
+            "delta": delta,
+            "hero_position": hero_a_index,
+            "starting_stack": starting_stack,
+            "final_stack": int(state.stacks[hero_a_index]),
+            "opponent_final_stack": int(state.stacks[1 - hero_a_index]),
+        }
+        with open(BIG_LOSS_FILE, "a") as f:
+            f.write(json.dumps(record) + "\n")
+
+    return delta
 
 def run_dual(agent_a: str, agent_b: str, hands: int, seed: Optional[int]):
 
     if seed is not None:
         random.seed(seed)
 
+    Path(BIG_LOSS_FILE).write_text("")
+
     decide_a = load_decide(agent_a)
     decide_b = load_decide(agent_b)
 
-    starting_stack = 1000  # Playground
+    starting_stack = 1000
     small_blind = 1
     big_blind = 2
 
@@ -106,10 +146,18 @@ def run_dual(agent_a: str, agent_b: str, hands: int, seed: Optional[int]):
     print(f"[dual-selfplay] playing {hands} hands ...")
 
     net_a = 0
+    stats = {
+        "vpip": 0,
+        "pfr": 0,
+        "river_calls": 0,
+        "hands": 0,
+        "deltas": [],
+    }
+
     t0 = time.time()
 
     for i in range(hands):
-        hero_index = i % 2  
+        hero_index = i % 2
         delta = play_one_hand(
             decide_a,
             decide_b,
@@ -117,6 +165,8 @@ def run_dual(agent_a: str, agent_b: str, hands: int, seed: Optional[int]):
             small_blind,
             big_blind,
             hero_index,
+            stats,
+            i + 1,
         )
         net_a += delta
 
@@ -127,10 +177,18 @@ def run_dual(agent_a: str, agent_b: str, hands: int, seed: Optional[int]):
     bb100_a = (net_a / big_blind) / hands * 100
     bb100_b = -bb100_a
 
-    print(f"  Agent A bb/100 : {bb100_a:+.1f}")
-    print(f"  Agent B bb/100 : {bb100_b:+.1f}")
-    print(f"  net A chips    : {net_a:+d}")
-    print(f"  elapsed        : {elapsed:.1f}s")
+    vpip_pct = stats["vpip"] / hands * 100
+    pfr_pct = stats["pfr"] / hands * 100
+    river_call_pct = stats["river_calls"] / hands * 100
+
+    print(f"Agent A bb/100      : {bb100_a:+.1f}")
+    print(f"Agent B bb/100      : {bb100_b:+.1f}")
+    print(f"net A chips         : {net_a:+d}")
+    print(f"VPIP %              : {vpip_pct:.1f}")
+    print(f"PFR %               : {pfr_pct:.1f}")
+    print(f"River Calls %       : {river_call_pct:.1f}")
+    print(f"Big losses saved to : {BIG_LOSS_FILE}")
+    print(f"elapsed             : {elapsed:.1f}s")
 
 def main():
     parser = argparse.ArgumentParser()
