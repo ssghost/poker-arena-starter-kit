@@ -38,6 +38,9 @@ TRASH_OFFSUIT_LOW = {
     ("5", "6"), ("5", "7"), ("5", "8"), ("5", "9"),
     ("6", "7"), ("6", "8"), ("6", "9"),
     ("7", "8"), ("7", "9"),
+    ("2", "K"), ("3", "K"), ("4", "K"), ("5", "K"),
+    ("2", "Q"), ("3", "Q"), ("4", "Q"), ("5", "Q"),
+    ("2", "J"), ("3", "J"), ("4", "J"), ("5", "J"),
 }
 
 def tier(cls: str) -> str:
@@ -95,7 +98,6 @@ def decide(table: dict, deadline_s: float = 10.0,
 
     btn = table.get("buttonSeatNumber")
     in_pos = self_seat == btn
-    active = len([s for s in seats if not s.get("isFolded") and s.get("seatNumber")!=self_seat])
 
     cls = _hand_class(hole)
     t = tier(cls)
@@ -124,15 +126,13 @@ def decide(table: dict, deadline_s: float = 10.0,
 
     # PREFLOP
     if not board:
-        wide = active <= 2
-
         if call_chips > 0 and is_unsuited_trash(hole):
             if "check" in available:
                 return _build("check", None, table, allowed, eq=0, po=0, msg="Trash check PF")
             return _build("fold", None, table, allowed, eq=0, po=pot_odds, msg="Trash fold PF")
 
         if call_chips == 0:
-            if (t in ("P","S","M")) or (wide and t=="W" and not is_unsuited_trash(hole)):
+            if t in ("P", "S", "M"):
                 if allowed.get("canBet"):
                     br = allowed.get("betRange") or {}
                     min_b = int(br.get("min") or bb*2)
@@ -140,6 +140,7 @@ def decide(table: dict, deadline_s: float = 10.0,
                     size = min(max_b, max(min_b, int(pot*0.7)+bb))
                     return _build("bet", size, table, allowed,
                                   eq=0.5, po=0, msg="Open PFR")
+
             if "check" in available:
                 return _build("check", None, table, allowed, eq=0, po=0, msg="Check PF")
             return _build("fold", None, table, allowed, eq=0, po=0, msg="Fold PF")
@@ -149,8 +150,8 @@ def decide(table: dict, deadline_s: float = 10.0,
         if risk_ratio > max_risk and equity < stack_off_req:
             return _build("fold", None, table, allowed,
                           eq=equity, po=pot_odds, msg="Risk fold PF")
-        
-        if t in ("P","S") or (t == "M" and cls not in {"22","33","44","55","66"}):
+
+        if t in ("P", "S") or (t == "M" and equity > 0.55):
             if allowed.get("canRaise"):
                 rr = allowed.get("raiseRange") or {}
                 min_r = int(rr.get("min") or call_chips*2)
@@ -159,7 +160,11 @@ def decide(table: dict, deadline_s: float = 10.0,
                 return _build("raise", size, table, allowed,
                               eq=equity, po=pot_odds, msg="Raise/3bet PF")
 
-        if equity > pot_odds + 0.08:
+        if t == "W" and equity < 0.52:
+            return _build("fold", None, table, allowed,
+                          eq=equity, po=pot_odds, msg="Weak fold PF")
+
+        if equity > pot_odds + 0.10:
             return _build("call", None, table, allowed,
                           eq=equity, po=pot_odds, msg="Call PF")
 
@@ -174,15 +179,18 @@ def decide(table: dict, deadline_s: float = 10.0,
 
     board_ranks = [c[:-1] for c in board]
     hole_ranks = [c[:-1] for c in hole]
-    is_pair = hole_ranks[0] == hole_ranks[1]
+    is_pair = len(hole_ranks) == 2 and hole_ranks[0] == hole_ranks[1]
     has_made_pair = any(r in board_ranks for r in hole_ranks) or is_pair
 
     if call_chips > 0:
+        # Strict Defense
         if not has_made_pair and not draw:
-            high_board_cards = sum(1 for r in board_ranks if r in ["T", "J", "Q", "K", "A"])
-            if high_board_cards >= 2:
+            if len(board) >= 4:
                 return _build("fold", None, table, allowed,
-                              eq=equity, po=pot_odds, msg="High board no-hit fold")
+                              eq=equity, po=pot_odds, msg="Turn/River no hit fold")
+            if call_chips > pot * 0.20 and equity < 0.50:
+                return _build("fold", None, table, allowed,
+                              eq=equity, po=pot_odds, msg="Flop no hit fold")
 
         if is_pair and not draw:
             rank_order = "23456789TJQKA"
@@ -224,6 +232,11 @@ def decide(table: dict, deadline_s: float = 10.0,
                       eq=equity, po=pot_odds, msg="Fold")
 
     if allowed.get("canBet"):
+        if not has_made_pair and not draw and equity < 0.60:
+            if "check" in available:
+                return _build("check", None, table, allowed,
+                              eq=equity, po=0, msg="No hit check")
+
         if stack_bb > DEEP_STACK_BB:
             if equity > 0.85:
                 br = allowed.get("betRange") or {}
