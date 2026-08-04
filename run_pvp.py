@@ -13,7 +13,7 @@ if str(PROJECT_ROOT) not in sys.path:
 CREDS_PATH = Path(".arena-credentials")
 BASE_URL = "https://arena.dev.fun/api/arena"
 BIG_BLIND = 2
-DEFAULT_HANDS = 20
+DEFAULT_HANDS = 10
 PROGRESS_INTERVAL = 5
 WAIT_LOG_INTERVAL = 150
 REJOIN_INTERVAL = 300  
