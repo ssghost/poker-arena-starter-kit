@@ -185,7 +185,7 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int, run_until_big_l
                                     "table_snapshot": last_table_snapshot
                                 }, ensure_ascii=False) + "\n")
                         if run_until_big_loss:
-                            print(f"\n[ALERT] Big loss detected: {diff} chips at hand #{hands}. Terminating run.")
+                            print(f"\n[ALERT] Big loss detected: {diff} chips at hand #{hands}.")
                             stop_run = True
                 else:
                     pushes += 1
