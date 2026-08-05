@@ -2,6 +2,7 @@ import json
 import sys
 from pathlib import Path
 import httpx
+import time
 
 CREDS_PATH = Path(".arena-credentials")
 BASE_URL = "https://arena.dev.fun/api/arena"
@@ -154,5 +155,52 @@ def rebuy(competition_id: str = "cms7hrnjg20czv7oi85cho570") -> None:
     except Exception as e:
         print(f"Rebuy execution failed: {e}", file=sys.stderr)
 
+def force_leave(competition_id: str = "cms7hrnjg20czv7oi85cho570") -> None:
+    key, _ = load()
+    headers = {"x-arena-api-key": key, "Content-Type": "application/json"}
+
+    try:
+        pending_url = f"{BASE_URL}/texas/pending-actions?competitionId={competition_id}"
+        resp = httpx.get(pending_url, headers=headers, timeout=10.0)
+        if resp.status_code == 200:
+            tables = resp.json().get("tables", [])
+            for t in tables:
+                if t.get("allowedActions"):
+                    tid = t.get("tableId")
+                    httpx.post(
+                        f"{BASE_URL}/texas/action",
+                        headers=headers,
+                        json={"tableId": tid, "action": "fold"},
+                        timeout=10.0,
+                    )
+                    print(f"[Force Leave] Sent fold to table: {tid}")
+    except Exception as e:
+        print(f"[Force Leave] Check pending actions error: {e}", file=sys.stderr)
+
+    time.sleep(1.0)
+
+    leave_url = f"{BASE_URL}/texas/leave"
+    for attempt in range(1, 6):
+        try:
+            leave_resp = httpx.post(
+                leave_url,
+                headers=headers,
+                json={"competitionId": competition_id},
+                timeout=10.0,
+            )
+            leave_resp.raise_for_status()
+            data = leave_resp.json()
+
+            if data.get("left"):
+                print(f"[Force Leave] Left table for competition: {competition_id}")
+                return
+            
+            print(f"[Force Leave] Attempt {attempt}: leave response {data}.")
+        except Exception as e:
+            print(f"[Force Leave] Attempt {attempt} failed: {e}", file=sys.stderr)
+        time.sleep(2.0)
+
+    print("[Force Leave] Reached max retries.", file=sys.stderr)
+
 if __name__ == "__main__":
-    check_status()
+    check_status(competition_id = "cmsg35zvs001hbagh1wdjc1me")

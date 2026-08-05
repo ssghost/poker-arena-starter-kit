@@ -88,7 +88,7 @@ def join_competition(client, headers, competition_id):
     except Exception as e:
         print(f"[arena] rejoin failed: {e}")
 
-def run_pvp_loop(competition_id: str, decide_fn, max_hands: int):
+def run_pvp_loop(competition_id: str, decide_fn, max_hands: int, run_until_big_loss: bool = False):
     key = load()
     headers = {"x-arena-api-key": key}
     client = httpx.Client(timeout=20.0)
@@ -97,7 +97,10 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int):
     print(f"[arena] hero=decide()")
     print(f"[arena] competition={competition_id}")
     print(f"[arena] blinds=1/{BIG_BLIND}")
-    print(f"[arena] playing {max_hands} hands ...")
+    if run_until_big_loss:
+        print("[arena] mode: run until big loss (>=50 chips) ...")
+    else:
+        print(f"[arena] playing {max_hands} hands ...")
 
     hands = 0
     wins = losses = pushes = 0
@@ -116,7 +119,9 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int):
     last_wait_log = time.time()
     last_rejoin_time = time.time()
 
-    while hands < max_hands:
+    stop_run = False
+
+    while (run_until_big_loss or hands < max_hands) and not stop_run:
         if time.time() - last_rejoin_time > REJOIN_INTERVAL:
             print("[arena] 300s elapsed → force rejoin")
             leave_competition(client, headers, competition_id)
@@ -179,13 +184,20 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int):
                                     "timestamp": time.time(),
                                     "table_snapshot": last_table_snapshot
                                 }, ensure_ascii=False) + "\n")
+                        if run_until_big_loss:
+                            print(f"\n[ALERT] Big loss detected: {diff} chips at hand #{hands}. Terminating run.")
+                            stop_run = True
                 else:
                     pushes += 1
 
                 prev_stack = stack
 
-                if hands % PROGRESS_INTERVAL == 0 or hands == max_hands:
-                    print(f"  ... {hands}/{max_hands} hands  net={net:+d} chips")
+                target_str = f"/{max_hands}" if not run_until_big_loss else ""
+                if hands % PROGRESS_INTERVAL == 0 or stop_run or (not run_until_big_loss and hands == max_hands):
+                    print(f"  ... {hands}{target_str} hands  net={net:+d} chips")
+
+                if stop_run:
+                    break
 
             if not table.get("allowedActions"):
                 continue
@@ -241,6 +253,7 @@ if __name__ == "__main__":
     parser.add_argument("--competition-id", required=True)
     parser.add_argument("--agent", default="my_agent.py")
     parser.add_argument("--max-hands", type=int, default=DEFAULT_HANDS)
+    parser.add_argument("--run-until-big-loss", action="store_true", default=False)
     args = parser.parse_args()
 
     decide_fn = load_agent(args.agent)
@@ -249,4 +262,5 @@ if __name__ == "__main__":
         competition_id=args.competition_id,
         decide_fn=decide_fn,
         max_hands=args.max_hands,
+        run_until_big_loss=args.run_until_big_loss,
     )

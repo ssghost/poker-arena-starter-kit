@@ -150,26 +150,56 @@ def decide(table: dict, deadline_s: float = 10.0,
         if risk_ratio > max_risk and equity < stack_off_req:
             return _build("fold", None, table, allowed,
                           eq=equity, po=pot_odds, msg="Risk fold PF")
+        
+        # Anti Min-Raise
+        if call_chips >= bb * 10:  
+            if cls == "AA":
+                if allowed.get("canRaise"):
+                    rr = allowed.get("raiseRange") or {}
+                    max_r = int(rr.get("max") or stack)
+                    return _build("raise", max_r, table, allowed, eq=equity, po=pot_odds, msg="AA All-In PF")
+                return _build("call", None, table, allowed, eq=equity, po=pot_odds, msg="AA Call PF")
+            elif cls in ("KK", "QQ", "AKs", "AKo") and call_chips <= bb * 25:
+                return _build("call", None, table, allowed, eq=equity, po=pot_odds, msg="Premium Flat 4bet+ PF")
+            else:
+                return _build("fold", None, table, allowed, eq=equity, po=pot_odds, msg="Fold 4bet+ PF")
 
-        if t in ("P", "S") or (t == "M" and equity > 0.55):
-            if allowed.get("canRaise"):
-                rr = allowed.get("raiseRange") or {}
-                min_r = int(rr.get("min") or call_chips*2)
-                max_r = int(rr.get("max") or min_r)
-                size = min(max_r, max(min_r, int(pot*0.8)+call_chips))
-                return _build("raise", size, table, allowed,
-                              eq=equity, po=pot_odds, msg="Raise/3bet PF")
+        elif call_chips >= bb * 5:  
+            if cls in ("AA", "KK"):
+                if allowed.get("canRaise"):
+                    rr = allowed.get("raiseRange") or {}
+                    min_r = int(rr.get("min") or call_chips*2)
+                    max_r = int(rr.get("max") or min_r)
+                    size = min(max_r, max(min_r, int(pot*0.8)+call_chips))
+                    return _build("raise", size, table, allowed, eq=equity, po=pot_odds, msg="Monster 4bet PF")
+                return _build("call", None, table, allowed, eq=equity, po=pot_odds, msg="Monster Call 3bet PF")
+            elif cls in ("QQ", "JJ", "AKs", "AKo", "AQs"):
+                return _build("call", None, table, allowed, eq=equity, po=pot_odds, msg="Strong Flat 3bet PF")
+            elif t in ("P", "S") or (t == "M" and equity > 0.58):
+                return _build("call", None, table, allowed, eq=equity, po=pot_odds, msg="Call 3bet PF")
+            else:
+                return _build("fold", None, table, allowed, eq=equity, po=pot_odds, msg="Fold 3bet PF")
 
-        if t == "W" and equity < 0.52:
+        else: 
+            if t in ("P", "S") or (t == "M" and equity > 0.55):
+                if allowed.get("canRaise"):
+                    rr = allowed.get("raiseRange") or {}
+                    min_r = int(rr.get("min") or call_chips*2)
+                    max_r = int(rr.get("max") or min_r)
+                    size = min(max_r, max(min_r, int(pot*0.8)+call_chips))
+                    return _build("raise", size, table, allowed,
+                                  eq=equity, po=pot_odds, msg="3bet PF")
+
+            if t == "W" and equity < 0.52:
+                return _build("fold", None, table, allowed,
+                              eq=equity, po=pot_odds, msg="Weak fold PF")
+
+            if equity > pot_odds + 0.10:
+                return _build("call", None, table, allowed,
+                              eq=equity, po=pot_odds, msg="Call PF")
+
             return _build("fold", None, table, allowed,
-                          eq=equity, po=pot_odds, msg="Weak fold PF")
-
-        if equity > pot_odds + 0.10:
-            return _build("call", None, table, allowed,
-                          eq=equity, po=pot_odds, msg="Call PF")
-
-        return _build("fold", None, table, allowed,
-                      eq=equity, po=pot_odds, msg="Fold PF")
+                          eq=equity, po=pot_odds, msg="Fold PF")
 
     # POSTFLOP
     equity = estimate_equity(hole, board, sims=700, deadline_s=deadline_s)
