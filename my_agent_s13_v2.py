@@ -179,7 +179,7 @@ def decide(table: dict, deadline_s: float = 10.0,
             return _build("fold", None, table, allowed,
                           eq=equity, po=pot_odds, msg="Risk fold PF")
 
-        # Preflop topcover
+        # Preflop Topcover
         if call_chips >= bb * 10:  
             if cls == "AA":
                 if allowed.get("canRaise"):
