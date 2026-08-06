@@ -74,7 +74,6 @@ def is_draw(board: list, hole: list) -> bool:
     return False
 
 def is_monster_hand(hole: list, board: list) -> bool:
-    """判斷是否為結構化絕對強牌 (Monster Hand)"""
     if len(hole) != 2 or len(board) < 3:
         return False
     
@@ -180,6 +179,7 @@ def decide(table: dict, deadline_s: float = 10.0,
             return _build("fold", None, table, allowed,
                           eq=equity, po=pot_odds, msg="Risk fold PF")
 
+        # Preflop topcover
         if call_chips >= bb * 10:  
             if cls == "AA":
                 if allowed.get("canRaise"):
@@ -218,7 +218,7 @@ def decide(table: dict, deadline_s: float = 10.0,
                     return _build("raise", size, table, allowed,
                                   eq=equity, po=pot_odds, msg="3bet PF")
 
-            if t in ("P", "S", "M") and equity > pot_odds + 0.18:
+            if t in ("P", "S", "M") and equity > pot_odds + 0.20:
                 return _build("call", None, table, allowed,
                               eq=equity, po=pot_odds, msg="Call PF Tight")
 
@@ -237,8 +237,9 @@ def decide(table: dict, deadline_s: float = 10.0,
     is_pair = len(hole_ranks) == 2 and hole_ranks[0] == hole_ranks[1]
     has_made_pair = any(r in board_ranks for r in hole_ranks) or is_pair
 
-    # Underpair 
+    # Underpair
     is_underpair = False
+    over_cards = 0
     if is_pair:
         rank_order = "23456789TJQKA"
         pocket_val = rank_order.find(hole_ranks[0])
@@ -256,13 +257,16 @@ def decide(table: dict, deadline_s: float = 10.0,
                 return _build("fold", None, table, allowed,
                               eq=equity, po=pot_odds, msg="Turn/River no hit fold")
 
-        if is_pair and is_underpair:
-            rank_order = "23456789TJQKA"
-            pocket_val = rank_order.find(hole_ranks[0])
-            over_cards = sum(1 for r in board_ranks if rank_order.find(r) > pocket_val)
-            if over_cards >= 2 and call_chips > pot * 0.25:
+        if is_pair and is_underpair and over_cards >= 1 and call_chips > pot * 0.25:
+            return _build("fold", None, table, allowed,
+                          eq=equity, po=pot_odds, msg="Underpair overcard fold")
+
+        if is_river and not monster:
+            board_suits = [c[-1] for c in board]
+            has_3flush_board = any(board_suits.count(s) >= 3 for s in "shdc")
+            if (has_3flush_board or is_underpair) and call_chips > pot * 0.30:
                 return _build("fold", None, table, allowed,
-                              eq=equity, po=pot_odds, msg="Underpair multi-overcard fold")
+                              eq=equity, po=pot_odds, msg="River non-monster dangerous board fold")
 
         if risk_ratio > max_risk and equity < stack_off_req:
             return _build("fold", None, table, allowed,
@@ -302,7 +306,7 @@ def decide(table: dict, deadline_s: float = 10.0,
                 return _build("check", None, table, allowed,
                               eq=equity, po=0, msg="No hit / Underpair check")
 
-        # Monster Sizing
+        #  Monster Sizing
         if monster and equity >= 0.82:
             br = allowed.get("betRange") or {}
             min_b = int(br.get("min") or pot//2 or 1)
@@ -310,7 +314,6 @@ def decide(table: dict, deadline_s: float = 10.0,
             size = min(max_b, max(min_b, int(pot*1.30)))
             return _build("bet", size, table, allowed,
                           eq=equity, po=0, msg="Monster Big Win Overbet")
-
 
         if equity > 0.78:
             br = allowed.get("betRange") or {}
