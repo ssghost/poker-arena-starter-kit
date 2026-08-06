@@ -181,7 +181,7 @@ def decide(table: dict, deadline_s: float = 10.0,
                 return _build("fold", None, table, allowed, eq=equity, po=pot_odds, msg="Fold 3bet PF")
 
         else:  
-            if t in ("P", "S") or (t == "M" and equity > 0.55):
+            if t in ("P", "S"):  
                 if allowed.get("canRaise"):
                     rr = allowed.get("raiseRange") or {}
                     min_r = int(rr.get("min") or call_chips*2)
@@ -190,11 +190,7 @@ def decide(table: dict, deadline_s: float = 10.0,
                     return _build("raise", size, table, allowed,
                                   eq=equity, po=pot_odds, msg="3bet PF")
 
-            if t == "W" and equity < 0.52:
-                return _build("fold", None, table, allowed,
-                              eq=equity, po=pot_odds, msg="Weak fold PF")
-
-            if equity > pot_odds + 0.10:
+            if t in ("P", "S", "M") and equity > pot_odds + 0.10:
                 return _build("call", None, table, allowed,
                               eq=equity, po=pot_odds, msg="Call PF")
 
@@ -212,6 +208,15 @@ def decide(table: dict, deadline_s: float = 10.0,
     is_pair = len(hole_ranks) == 2 and hole_ranks[0] == hole_ranks[1]
     has_made_pair = any(r in board_ranks for r in hole_ranks) or is_pair
 
+    # Underpair
+    is_underpair = False
+    if is_pair:
+        rank_order = "23456789TJQKA"
+        pocket_val = rank_order.find(hole_ranks[0])
+        over_cards = sum(1 for r in board_ranks if rank_order.find(r) > pocket_val)
+        if over_cards >= 1:
+            is_underpair = True
+
     if call_chips > 0:
         # Strict Defense
         if not has_made_pair and not draw:
@@ -223,10 +228,7 @@ def decide(table: dict, deadline_s: float = 10.0,
                               eq=equity, po=pot_odds, msg="Turn/River no hit fold")
 
         if is_pair and not draw:
-            rank_order = "23456789TJQKA"
-            pocket_val = rank_order.find(hole_ranks[0])
-            over_cards = sum(1 for r in board_ranks if rank_order.find(r) > pocket_val)
-            if over_cards >= 2 and call_chips > pot * 0.35:
+            if is_underpair and call_chips > pot * 0.35:
                 return _build("fold", None, table, allowed,
                               eq=equity, po=pot_odds, msg="Underpair overcard fold")
 
@@ -262,10 +264,10 @@ def decide(table: dict, deadline_s: float = 10.0,
                       eq=equity, po=pot_odds, msg="Fold")
 
     if allowed.get("canBet"):
-        if not has_made_pair and not draw and equity < 0.60:
+        if (not has_made_pair and not draw and equity < 0.60) or is_underpair:
             if "check" in available:
                 return _build("check", None, table, allowed,
-                              eq=equity, po=0, msg="No hit check")
+                              eq=equity, po=0, msg="No hit / Underpair check")
 
         if stack_bb > DEEP_STACK_BB:
             if equity > 0.85:
