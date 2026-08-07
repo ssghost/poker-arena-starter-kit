@@ -320,7 +320,7 @@ def decide(table: dict, deadline_s: float = 10.0,
             br = allowed.get("betRange") or {}
             min_b = int(br.get("min") or pot//2 or 1)
             max_b = int(br.get("max") or min_b)
-            size = min(max_b, max(min_b, int(pot*0.75)))
+            size = min(max_b, max(min_b, int(pot*0.80)))
             return _build("bet", size, table, allowed,
                           eq=equity, po=0, msg="Solid Value Bet")
 
