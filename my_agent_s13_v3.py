@@ -285,6 +285,16 @@ def decide(table: dict, deadline_s: float = 10.0,
             return _build("fold", None, table, allowed,
                           eq=equity, po=pot_odds, msg="Weak draw fold")
 
+        # Flop OOP Check-Raise Monster
+        is_flop = len(board) == 3
+        if is_flop and not in_pos and monster and equity >= 0.80 and allowed.get("canRaise"):
+            rr = allowed.get("raiseRange") or {}
+            min_r = int(rr.get("min") or call_chips * 2)
+            max_r = int(rr.get("max") or min_r)
+            size = min(max_r, max(min_r, int(pot * 1.1) + call_chips))
+            return _build("raise", size, table, allowed,
+                          eq=equity, po=pot_odds, msg="OOP Flop Monster Check-Raise")
+
         # Overbet Raise 
         if monster and equity >= stack_off_req and allowed.get("canRaise"):
             rr = allowed.get("raiseRange") or {}
@@ -302,6 +312,13 @@ def decide(table: dict, deadline_s: float = 10.0,
                       eq=equity, po=pot_odds, msg="Fold")
 
     if allowed.get("canBet"):
+        # Flop OOP Trap Check
+        is_flop = len(board) == 3
+        if is_flop and not in_pos and monster and equity >= 0.80:
+            if "check" in available:
+                return _build("check", None, table, allowed,
+                              eq=equity, po=0, msg="OOP Flop Monster Trap Check")
+
         if (not has_made_pair and not draw and equity < 0.60) or is_underpair:
             if "check" in available:
                 return _build("check", None, table, allowed,
