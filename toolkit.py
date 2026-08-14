@@ -218,5 +218,5 @@ def force_leave(competition_id: str = "cms7hrnjg20czv7oi85cho570", max_wait_seco
     return False
 
 if __name__ == "__main__":
-    force_leave(competition_id = "cmsg35zvs001hbagh1wdjc1me")
-    check_status(competition_id = "cmsg35zvs001hbagh1wdjc1me")
+    check_status(competition_id="cmsrglcro33ttvijti3slinjh")
+    
