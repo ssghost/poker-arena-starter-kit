@@ -155,32 +155,18 @@ def rebuy(competition_id: str = "cms7hrnjg20czv7oi85cho570") -> None:
     except Exception as e:
         print(f"Rebuy execution failed: {e}", file=sys.stderr)
 
-def force_leave(competition_id: str = "cms7hrnjg20czv7oi85cho570") -> None:
+def force_leave(competition_id: str = "cms7hrnjg20czv7oi85cho570", max_wait_seconds: int = 45) -> bool:
     key, _ = load()
     headers = {"x-arena-api-key": key, "Content-Type": "application/json"}
-
-    try:
-        pending_url = f"{BASE_URL}/texas/pending-actions?competitionId={competition_id}"
-        resp = httpx.get(pending_url, headers=headers, timeout=10.0)
-        if resp.status_code == 200:
-            tables = resp.json().get("tables", [])
-            for t in tables:
-                if t.get("allowedActions"):
-                    tid = t.get("tableId")
-                    httpx.post(
-                        f"{BASE_URL}/texas/action",
-                        headers=headers,
-                        json={"tableId": tid, "action": "fold"},
-                        timeout=10.0,
-                    )
-                    print(f"[Force Leave] Sent fold to table: {tid}")
-    except Exception as e:
-        print(f"[Force Leave] Check pending actions error: {e}", file=sys.stderr)
-
-    time.sleep(1.0)
-
+    
+    pending_url = f"{BASE_URL}/texas/pending-actions?competitionId={competition_id}"
     leave_url = f"{BASE_URL}/texas/leave"
-    for attempt in range(1, 6):
+    action_url = f"{BASE_URL}/texas/action"
+
+    start_time = time.time()
+    print(f"[Force Leave] Initiating leave sequence for competition: {competition_id}")
+
+    while time.time() - start_time < max_wait_seconds:
         try:
             leave_resp = httpx.post(
                 leave_url,
@@ -188,19 +174,49 @@ def force_leave(competition_id: str = "cms7hrnjg20czv7oi85cho570") -> None:
                 json={"competitionId": competition_id},
                 timeout=10.0,
             )
-            leave_resp.raise_for_status()
-            data = leave_resp.json()
-
-            if data.get("left"):
-                print(f"[Force Leave] Left table for competition: {competition_id}")
-                return
-            
-            print(f"[Force Leave] Attempt {attempt}: leave response {data}.")
+            if leave_resp.status_code == 200:
+                leave_data = leave_resp.json()
+                if leave_data.get("left"):
+                    print(f"[Force Leave] Successfully left table.")
+                    return True
+                else:
+                    print(f"[Force Leave] Leave rejected by server: {leave_data}")
         except Exception as e:
-            print(f"[Force Leave] Attempt {attempt} failed: {e}", file=sys.stderr)
+            print(f"[Force Leave] Leave request error: {e}", file=sys.stderr)
+
+        try:
+            resp = httpx.get(pending_url, headers=headers, timeout=10.0)
+            if resp.status_code == 200:
+                data = resp.json()
+                participant = data.get("participant", {})
+                chip_state = participant.get("chipState")
+                tables = data.get("tables", [])
+
+                if not tables and chip_state not in ("locked_in_play", "in_play"):
+                    print(f"[Force Leave] No active tables found. Chip state: {chip_state}")
+                    return True
+
+                for t in tables:
+                    tid = t.get("tableId")
+                    allowed = t.get("allowedActions", [])
+                
+                    if "fold" in allowed or allowed:
+                        action = "fold" if "fold" in allowed else allowed[0]
+                        action_resp = httpx.post(
+                            action_url,
+                            headers=headers,
+                            json={"tableId": tid, "action": action},
+                            timeout=10.0,
+                        )
+                        print(f"[Force Leave] Performed '{action}' on table: {tid} (Status: {action_resp.status_code})")
+        except Exception as e:
+            print(f"[Force Leave] Pending actions check error: {e}", file=sys.stderr)
+
         time.sleep(2.0)
 
-    print("[Force Leave] Reached max retries.", file=sys.stderr)
+    print(f"[Force Leave] Timeout after {max_wait_seconds}s. Player might still be in hand.", file=sys.stderr)
+    return False
 
 if __name__ == "__main__":
+    force_leave(competition_id = "cmsg35zvs001hbagh1wdjc1me")
     check_status(competition_id = "cmsg35zvs001hbagh1wdjc1me")

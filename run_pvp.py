@@ -47,62 +47,99 @@ def get_stack(table: dict):
             return int(s.get("stackChips") or 0)
     return 0
 
-def try_join(client, headers, competition_id):
-    print("[arena] attempting to join competition...")
+def try_join(client, headers, competition_id, silent: bool = False):
+    if not silent:
+        print("[arena] attempting to join competition...")
     try:
         r = client.post(
             f"{BASE_URL}/texas/join",
             headers=headers,
             json={"competitionId": competition_id},
         )
-        if r.status_code == 200:
-            print("[arena] Joined the competition.")
-        elif r.status_code == 400 and "already" in r.text.lower():
-            print("[arena] already joined.")
-        elif r.status_code == 409:
-            print("[arena] already seated (table limit).")
-        else:
-            print(f"[arena] join response: {r.status_code} {r.text}")
+        if not silent:
+            if r.status_code == 200:
+                print("[arena] Joined the competition.")
+            elif r.status_code == 400 and "already" in r.text.lower():
+                print("[arena] already joined.")
+            elif r.status_code == 409:
+                print("[arena] already seated (table limit).")
+            else:
+                print(f"[arena] join response: {r.status_code} {r.text}")
     except Exception as e:
-        print(f"[arena] join failed: {e}")
+        if not silent:
+            print(f"[arena] join failed: {e}")
 
-def leave_competition(client, headers, competition_id):
+def leave_competition(client, headers, competition_id, silent: bool = False):
     try:
         client.post(
             f"{BASE_URL}/texas/leave",
             headers=headers,
             json={"competitionId": competition_id},
         )
-        print("[arena] left table")
+        if not silent:
+            print("[arena] left table")
     except Exception as e:
-        print(f"[arena] leave failed: {e}")
+        if not silent:
+            print(f"[arena] leave failed: {e}")
 
-def join_competition(client, headers, competition_id):
+def join_competition(client, headers, competition_id, silent: bool = False):
     try:
         client.post(
             f"{BASE_URL}/texas/join",
             headers=headers,
             json={"competitionId": competition_id},
         )
-        print("[arena] rejoined table")
+        if not silent:
+            print("[arena] rejoined table")
     except Exception as e:
-        print(f"[arena] rejoin failed: {e}")
+        if not silent:
+            print(f"[arena] rejoin failed: {e}")
+
+def print_analytics(chunk_hands, wins, losses, pushes, net, elapsed,
+                    vpip_hands, pfr_hands, river_calls, big_wins, big_losses,
+                    chunk_title="50"):
+    hands_per_sec = chunk_hands / elapsed if elapsed > 0 else 0
+    bb100 = (net / chunk_hands * (100 / BIG_BLIND)) if chunk_hands else 0
+    vpip_pct = (vpip_hands / chunk_hands * 100) if chunk_hands else 0
+    pfr_pct = (pfr_hands / chunk_hands * 100) if chunk_hands else 0
+
+    print(f"\n--- {chunk_title} Hands Analytics ---")
+    print(f"  hands       : {chunk_hands}")
+    print(f"  opponent    : Arena Live")
+    print(f"  wins/losses : {wins}/{losses}  (push: {pushes})")
+    print(f"  net chips   : {net:+d}")
+    print(f"  bb/100      : {bb100:+.1f}")
+    print(f"  elapsed     : {elapsed:.1f}s  ({hands_per_sec:.2f} hands/s)")
+    print(f"  VPIP %      : {vpip_pct:.1f}% ({vpip_hands}/{chunk_hands})")
+    print(f"  PFR %      : {pfr_pct:.1f}% ({pfr_hands}/{chunk_hands})")
+    print(f"  River Calls : {river_calls}")
+    print(f"  Big Wins    : {len(big_wins)} hands (>=50 chips win: {big_wins})")
+    print(f"  Big Losses  : {len(big_losses)} hands (>=50 chips loss: {big_losses})")
+    print("-" * 32 + "\n")
 
 def run_pvp_loop(competition_id: str, decide_fn, max_hands: int,
                  run_until_big_loss: bool = False,
-                 run_until_big_win_or_loss: bool = False):
+                 run_until_big_win_or_loss: bool = False,
+                 continuous: bool = False):
     key = load()
     headers = {"x-arena-api-key": key}
     client = httpx.Client(timeout=20.0)
-    try_join(client, headers, competition_id)
+    
+    if continuous:
+        run_until_big_loss = True
 
-    print(f"[arena] hero=decide()")
-    print(f"[arena] competition={competition_id}")
-    print(f"[arena] blinds=1/{BIG_BLIND}")
+    try_join(client, headers, competition_id, silent=continuous)
 
-    infinite_hands_mode = run_until_big_loss or run_until_big_win_or_loss
+    if not continuous:
+        print(f"[arena] hero=decide()")
+        print(f"[arena] competition={competition_id}")
+        print(f"[arena] blinds=1/{BIG_BLIND}")
 
-    if run_until_big_win_or_loss:
+    infinite_hands_mode = run_until_big_loss or run_until_big_win_or_loss or continuous
+
+    if continuous:
+        print("[arena] mode: continuous background (silent, report per 50 hands, stop on big loss / 2x heavy loss chunks) ...")
+    elif run_until_big_win_or_loss:
         print("[arena] mode: run until big win or loss (>=50 chips) ...")
     elif run_until_big_loss:
         print("[arena] mode: run until big loss (>=50 chips) ...")
@@ -120,6 +157,19 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int,
     big_loss_hands = []
     big_win_hands = []
 
+    c_hands = 0
+    c_wins = c_losses = c_pushes = 0
+    c_net = 0
+    c_start = time.time()
+    c_vpip_hands = 0
+    c_pfr_hands = 0
+    c_river_calls = 0
+    c_big_wins = []
+    c_big_losses = []
+    
+    # 紀錄連續 50 局虧損超過 50 枚的次數
+    consecutive_heavy_loss_chunks = 0
+
     prev_stack = None
     initial_stack = None
     last_table_snapshot = None
@@ -131,10 +181,11 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int,
 
     while (infinite_hands_mode or hands < max_hands) and not stop_run:
         if time.time() - last_rejoin_time > REJOIN_INTERVAL:
-            print("[arena] 300s elapsed → force rejoin")
-            leave_competition(client, headers, competition_id)
+            if not continuous:
+                print("[arena] 300s elapsed → force rejoin")
+            leave_competition(client, headers, competition_id, silent=continuous)
             time.sleep(2)
-            join_competition(client, headers, competition_id)
+            join_competition(client, headers, competition_id, silent=continuous)
             last_rejoin_time = time.time()
 
         try:
@@ -152,7 +203,7 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int,
         tables = data.get("tables", [])
 
         if not tables:
-            if time.time() - last_wait_log > WAIT_LOG_INTERVAL:
+            if not continuous and (time.time() - last_wait_log > WAIT_LOG_INTERVAL):
                 print("[arena] waiting for table / opponent...")
                 last_wait_log = time.time()
             time.sleep(1)
@@ -165,7 +216,7 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int,
             if stack < 20:
                 print(f"\n[ALERT] Low chips warning: stack = {stack} (< 20 chips).")
                 print("[ALERT] Exiting current table. Please rebuy chips manually.")
-                leave_competition(client, headers, competition_id)
+                leave_competition(client, headers, competition_id, silent=continuous)
                 client.close()
                 return
 
@@ -176,12 +227,16 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int,
             if prev_stack is not None and stack != prev_stack and table.get("boardCards") == []:
                 diff = stack - prev_stack
                 hands += 1
+                c_hands += 1
                 net = stack - initial_stack
+                c_net += diff
 
                 if diff > 0:
                     wins += 1
+                    c_wins += 1
                     if diff >= 50:
                         big_win_hands.append((hands, diff))
+                        c_big_wins.append((hands, diff))
                         if last_table_snapshot:
                             with open("big_win_hands.jsonl", "a", encoding="utf-8") as f:
                                 f.write(json.dumps({
@@ -195,8 +250,10 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int,
                             stop_run = True
                 elif diff < 0:
                     losses += 1
+                    c_losses += 1
                     if abs(diff) >= 50:
                         big_loss_hands.append((hands, diff))
+                        c_big_losses.append((hands, diff))
                         if last_table_snapshot:
                             with open("big_loss_hands.jsonl", "a", encoding="utf-8") as f:
                                 f.write(json.dumps({
@@ -210,12 +267,35 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int,
                             stop_run = True
                 else:
                     pushes += 1
+                    c_pushes += 1
 
                 prev_stack = stack
 
-                target_str = f"/{max_hands}" if not infinite_hands_mode else ""
-                if hands % PROGRESS_INTERVAL == 0 or stop_run or (not infinite_hands_mode and hands == max_hands):
-                    print(f"  ... {hands}{target_str} hands  net={net:+d} chips")
+                if not continuous:
+                    target_str = f"/{max_hands}" if not infinite_hands_mode else ""
+                    if hands % PROGRESS_INTERVAL == 0 or stop_run or (not infinite_hands_mode and hands == max_hands):
+                        print(f"  ... {hands}{target_str} hands  net={net:+d} chips")
+
+                if continuous and c_hands == 50:
+                    c_elapsed = time.time() - c_start
+                    print_analytics(c_hands, c_wins, c_losses, c_pushes, c_net, c_elapsed,
+                                    c_vpip_hands, c_pfr_hands, c_river_calls, c_big_wins, c_big_losses,
+                                    chunk_title=f"Hands {hands-49}-{hands}")
+                    
+                    if c_net < -50:
+                        consecutive_heavy_loss_chunks += 1
+                        if consecutive_heavy_loss_chunks >= 2:
+                            print(f"\n[ALERT] 2 consecutive 50-hand chunks lost >50 chips each. Stopping continuous mode.")
+                            stop_run = True
+                    else:
+                        consecutive_heavy_loss_chunks = 0
+
+                    c_hands = 0
+                    c_wins = c_losses = c_pushes = 0
+                    c_net = 0
+                    c_start = time.time()
+                    c_vpip_hands = c_pfr_hands = c_river_calls = 0
+                    c_big_wins, c_big_losses = [], []
 
                 if stop_run:
                     break
@@ -233,10 +313,13 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int,
 
             if act_name in ["call", "bet", "raise", "all-in", "all_in"]:
                 vpip_hands += 1
+                c_vpip_hands += 1
             if act_name in ["raise", "bet"]:
                 pfr_hands += 1
+                c_pfr_hands += 1
             if street == "river" and act_name == "call":
                 river_calls += 1
+                c_river_calls += 1
 
             try:
                 client.post(
@@ -251,24 +334,18 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int,
 
     client.close()
 
-    elapsed = time.time() - start
-    hands_per_sec = hands / elapsed if elapsed > 0 else 0
-    bb100 = (net / hands * (100 / BIG_BLIND)) if hands else 0
+    if continuous and c_hands > 0:
+        c_elapsed = time.time() - c_start
+        start_hand = hands - c_hands + 1
+        print_analytics(c_hands, c_wins, c_losses, c_pushes, c_net, c_elapsed,
+                        c_vpip_hands, c_pfr_hands, c_river_calls, c_big_wins, c_big_losses,
+                        chunk_title=f"Final Partial (Hands {start_hand}-{hands})")
 
-    vpip_pct = (vpip_hands / hands * 100) if hands else 0
-    pfr_pct = (pfr_hands / hands * 100) if hands else 0
-
-    print(f"  hands       : {hands}")
-    print(f"  opponent    : Arena Live")
-    print(f"  wins/losses : {wins}/{losses}  (push: {pushes})")
-    print(f"  net chips   : {net:+d}")
-    print(f"  bb/100      : {bb100:+.1f}")
-    print(f"  elapsed     : {elapsed:.1f}s  ({hands_per_sec:.2f} hands/s)")
-    print(f"  VPIP %      : {vpip_pct:.1f}% ({vpip_hands}/{hands})")
-    print(f"  PFR %       : {pfr_pct:.1f}% ({pfr_hands}/{hands})")
-    print(f"  River Calls : {river_calls}")
-    print(f"  Big Wins    : {len(big_win_hands)} hands (>=50 chips win: {big_win_hands})")
-    print(f"  Big Losses  : {len(big_loss_hands)} hands (>=50 chips loss: {big_loss_hands})")
+    if not continuous:
+        elapsed = time.time() - start
+        print_analytics(hands, wins, losses, pushes, net, elapsed,
+                        vpip_hands, pfr_hands, river_calls, big_win_hands, big_loss_hands,
+                        chunk_title="Total")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -277,6 +354,7 @@ if __name__ == "__main__":
     parser.add_argument("--max-hands", type=int, default=DEFAULT_HANDS)
     parser.add_argument("--run-until-big-loss", action="store_true", default=False)
     parser.add_argument("--run-until-big-win-or-loss", action="store_true", default=False)
+    parser.add_argument("--continuous", action="store_true", default=False)
     args = parser.parse_args()
 
     decide_fn = load_agent(args.agent)
@@ -287,4 +365,5 @@ if __name__ == "__main__":
         max_hands=args.max_hands,
         run_until_big_loss=args.run_until_big_loss,
         run_until_big_win_or_loss=args.run_until_big_win_or_loss,
+        continuous=args.continuous,
     )
