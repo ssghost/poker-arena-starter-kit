@@ -167,12 +167,13 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int,
     c_big_wins = []
     c_big_losses = []
     
-    # 紀錄連續 50 局虧損超過 50 枚的次數
     consecutive_heavy_loss_chunks = 0
 
     prev_stack = None
     initial_stack = None
     last_table_snapshot = None
+
+    tracked_hands = {}
 
     last_wait_log = time.time()
     last_rejoin_time = time.time()
@@ -212,6 +213,7 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int,
         for table in tables:
             table_id = table.get("tableId")
             stack = get_stack(table)
+            current_hand_id = table.get("handId") or table.get("roundId") or table.get("sequence") or table.get("handNumber")
 
             if stack < 20:
                 print(f"\n[ALERT] Low chips warning: stack = {stack} (< 20 chips).")
@@ -224,12 +226,23 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int,
                 initial_stack = stack
                 prev_stack = stack
 
-            if prev_stack is not None and stack != prev_stack and table.get("boardCards") == []:
-                diff = stack - prev_stack
+            prev_hand_info = tracked_hands.get(table_id)
+            if prev_hand_info is not None and current_hand_id is not None and prev_hand_info.get("hand_id") != current_hand_id:
                 hands += 1
                 c_hands += 1
+                diff = stack - prev_hand_info["stack_at_start"]
                 net = stack - initial_stack
                 c_net += diff
+
+                if prev_hand_info.get("vpip"):
+                    vpip_hands += 1
+                    c_vpip_hands += 1
+                if prev_hand_info.get("pfr"):
+                    pfr_hands += 1
+                    c_pfr_hands += 1
+                if prev_hand_info.get("river_call"):
+                    river_calls += 1
+                    c_river_calls += 1
 
                 if diff > 0:
                     wins += 1
@@ -269,18 +282,17 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int,
                     pushes += 1
                     c_pushes += 1
 
-                prev_stack = stack
-
                 if not continuous:
                     target_str = f"/{max_hands}" if not infinite_hands_mode else ""
                     if hands % PROGRESS_INTERVAL == 0 or stop_run or (not infinite_hands_mode and hands == max_hands):
                         print(f"  ... {hands}{target_str} hands  net={net:+d} chips")
 
-                if continuous and c_hands == 50:
+    
+                if continuous and c_hands >= 50:
                     c_elapsed = time.time() - c_start
                     print_analytics(c_hands, c_wins, c_losses, c_pushes, c_net, c_elapsed,
                                     c_vpip_hands, c_pfr_hands, c_river_calls, c_big_wins, c_big_losses,
-                                    chunk_title=f"Hands {hands-49}-{hands}")
+                                    chunk_title=f"Hands {hands-c_hands+1}-{hands}")
                     
                     if c_net < -50:
                         consecutive_heavy_loss_chunks += 1
@@ -294,11 +306,22 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int,
                     c_wins = c_losses = c_pushes = 0
                     c_net = 0
                     c_start = time.time()
-                    c_vpip_hands = c_pfr_hands = c_river_calls = 0
+                    c_vpip_hands = 0
+                    c_pfr_hands = 0
+                    c_river_calls = 0
                     c_big_wins, c_big_losses = [], []
 
                 if stop_run:
                     break
+            
+            if table_id not in tracked_hands or (current_hand_id is not None and tracked_hands[table_id].get("hand_id") != current_hand_id):
+                tracked_hands[table_id] = {
+                    "hand_id": current_hand_id,
+                    "stack_at_start": stack,
+                    "vpip": False,
+                    "pfr": False,
+                    "river_call": False
+                }
 
             if not table.get("allowedActions"):
                 continue
@@ -312,14 +335,11 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int,
             street = str(table.get("street", "")).lower()
 
             if act_name in ["call", "bet", "raise", "all-in", "all_in"]:
-                vpip_hands += 1
-                c_vpip_hands += 1
+                tracked_hands[table_id]["vpip"] = True
             if act_name in ["raise", "bet"]:
-                pfr_hands += 1
-                c_pfr_hands += 1
+                tracked_hands[table_id]["pfr"] = True
             if street == "river" and act_name == "call":
-                river_calls += 1
-                c_river_calls += 1
+                tracked_hands[table_id]["river_call"] = True
 
             try:
                 client.post(

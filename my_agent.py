@@ -27,9 +27,10 @@ OVERBET_REQ_DEEP = 0.85
 PREMIUM_3BET = {"AA", "KK", "QQ", "AKs", "AKo"}
 PREMIUM = {"AA", "KK", "QQ", "JJ", "AKs", "AKo"}
 STRONG = {"TT", "99", "AQs", "AQo", "AJs", "KQs"}
+
 MEDIUM = {
-    "88","77","66","55","44","33","22",
-    "ATs","KJs","QJs","JTs","T9s","98s","87s","76s"
+    "88", "77", "66", "55", "44", "33", "22",
+    "ATs", "KJs", "QJs", "JTs", "T9s"
 }
 
 TRASH_OFFSUIT_LOW = {
@@ -82,7 +83,7 @@ def is_true_monster(hole: list, board: list) -> bool:
     board_ranks = [c[:-1] for c in board]
     is_pair = hole_ranks[0] == hole_ranks[1]
     
-    # Set
+    # Set / Trips
     if is_pair and hole_ranks[0] in board_ranks:
         return True
     
@@ -125,7 +126,7 @@ def decide(table: dict, deadline_s: float = 10.0,
 
     self_seat = table.get("selfSeatNumber")
     seats = table.get("seats") or []
-    hero = next((s for s in seats if s.get("seatNumber")==self_seat), {})
+    hero = next((s for s in seats if s.get("seatNumber") == self_seat), {})
 
     hole = hero.get("holeCards") or []
     board = table.get("boardCards") or []
@@ -159,7 +160,7 @@ def decide(table: dict, deadline_s: float = 10.0,
 
     # SHORT STACK PUSH/FOLD
     if not board and stack_bb <= SHORT_STACK_BB:
-        if t in ("P","S","M") and allowed.get("canRaise"):
+        if t in ("P", "S", "M") and allowed.get("canRaise"):
             rr = allowed.get("raiseRange") or {}
             max_r = int(rr.get("max") or stack)
             return _build("raise", max_r, table, allowed,
@@ -168,9 +169,9 @@ def decide(table: dict, deadline_s: float = 10.0,
             return _build("check", None, table, allowed, eq=0, po=0, msg="Check short")
         return _build("fold", None, table, allowed, eq=0, po=pot_odds, msg="Fold short")
 
-    # PREFLOP 
+    # PREFLOP
     if not board:
-        if call_chips > 0 and is_unsuited_trash(hole):
+        if call_chips > 0 and (is_unsuited_trash(hole) or t == "W"):
             if "check" in available:
                 return _build("check", None, table, allowed, eq=0, po=0, msg="Trash check PF")
             return _build("fold", None, table, allowed, eq=0, po=pot_odds, msg="Trash fold PF")
@@ -179,9 +180,9 @@ def decide(table: dict, deadline_s: float = 10.0,
             if t in ("P", "S") or (t == "M" and in_pos):
                 if allowed.get("canBet"):
                     br = allowed.get("betRange") or {}
-                    min_b = int(br.get("min") or bb*2)
+                    min_b = int(br.get("min") or bb * 2)
                     max_b = int(br.get("max") or min_b)
-                    size = min(max_b, max(min_b, int(pot*0.7)+bb))
+                    size = min(max_b, max(min_b, int(pot * 0.7) + bb))
                     return _build("bet", size, table, allowed,
                                   eq=0.5, po=0, msg="Open PFR TAG")
 
@@ -195,7 +196,8 @@ def decide(table: dict, deadline_s: float = 10.0,
             return _build("fold", None, table, allowed,
                           eq=equity, po=pot_odds, msg="Risk fold PF")
 
-        if call_chips >= bb * 10:  
+        # 4-bet+ Top Defense
+        if call_chips >= bb * 10:
             if cls == "AA":
                 if allowed.get("canRaise"):
                     rr = allowed.get("raiseRange") or {}
@@ -207,13 +209,13 @@ def decide(table: dict, deadline_s: float = 10.0,
             else:
                 return _build("fold", None, table, allowed, eq=equity, po=pot_odds, msg="Fold 4bet+ PF")
 
-        elif call_chips >= bb * 5:  
+        elif call_chips >= bb * 5:
             if cls in ("AA", "KK"):
                 if allowed.get("canRaise"):
                     rr = allowed.get("raiseRange") or {}
-                    min_r = int(rr.get("min") or call_chips*2)
+                    min_r = int(rr.get("min") or call_chips * 2)
                     max_r = int(rr.get("max") or min_r)
-                    size = min(max_r, max(min_r, int(pot*0.8)+call_chips))
+                    size = min(max_r, max(min_r, int(pot * 0.8) + call_chips))
                     return _build("raise", size, table, allowed, eq=equity, po=pot_odds, msg="Monster 4bet PF")
                 return _build("call", None, table, allowed, eq=equity, po=pot_odds, msg="Monster Call 3bet PF")
             elif cls in ("QQ", "JJ", "AKs", "AKo", "AQs"):
@@ -223,17 +225,17 @@ def decide(table: dict, deadline_s: float = 10.0,
             else:
                 return _build("fold", None, table, allowed, eq=equity, po=pot_odds, msg="Fold 3bet PF")
 
-        else:  
+        else:
             if cls in PREMIUM_3BET:
                 if allowed.get("canRaise"):
                     rr = allowed.get("raiseRange") or {}
-                    min_r = int(rr.get("min") or call_chips*2)
+                    min_r = int(rr.get("min") or call_chips * 2)
                     max_r = int(rr.get("max") or min_r)
-                    size = min(max_r, max(min_r, int(pot*0.8)+call_chips))
+                    size = min(max_r, max(min_r, int(pot * 0.8) + call_chips))
                     return _build("raise", size, table, allowed,
                                   eq=equity, po=pot_odds, msg="Strict 3bet PF")
 
-            if t in ("P", "S") or (t == "M" and in_pos and equity > pot_odds + 0.25):
+            if t == "P" or (t == "S" and equity > pot_odds + 0.15) or (t == "M" and in_pos and equity > pot_odds + 0.30):
                 return _build("call", None, table, allowed,
                               eq=equity, po=pot_odds, msg="Call PF Strict")
 
@@ -255,7 +257,7 @@ def decide(table: dict, deadline_s: float = 10.0,
     is_pair = len(hole_ranks) == 2 and hole_ranks[0] == hole_ranks[1]
     has_made_pair = any(r in board_ranks for r in hole_ranks) or is_pair
 
-    # Underpair
+    # Underpair / Second Pair
     is_underpair = False
     over_cards = 0
     if is_pair:
@@ -265,28 +267,36 @@ def decide(table: dict, deadline_s: float = 10.0,
         if over_cards >= 1:
             is_underpair = True
 
+    board_suits = [c[-1] for c in board]
+    has_3flush_board = any(board_suits.count(s) >= 3 for s in "shdc")
+
     if call_chips > 0:
+        # Normal Defense
         if not has_made_pair and not draw:
             return _build("fold", None, table, allowed,
                           eq=equity, po=pot_odds, msg="No hit / Air fold (Stop Small Loss)")
 
-        if draw and call_chips > pot * 0.33 and equity < 0.50:
+        if draw and call_chips > pot * 0.30 and equity < 0.52:
             return _build("fold", None, table, allowed,
                           eq=equity, po=pot_odds, msg="Weak draw stop-loss fold")
 
-        if is_pair and is_underpair and over_cards >= 1 and call_chips > pot * 0.25:
+        if is_pair and is_underpair and over_cards >= 1 and call_chips > pot * 0.20:
             return _build("fold", None, table, allowed,
                           eq=equity, po=pot_odds, msg="Underpair overcard fold")
 
-        if is_river and not monster:
-            board_suits = [c[-1] for c in board]
-            has_3flush_board = any(board_suits.count(s) >= 3 for s in "shdc")
-            if (has_3flush_board or is_underpair) and call_chips > pot * 0.25:
+        # Non True Monster Defense
+        if (has_3flush_board or call_chips > pot * 0.40) and not true_monster:
+            return _build("fold", None, table, allowed,
+                          eq=equity, po=pot_odds, msg="Facing Raise / Wet Board Non-Monster Fold")
+
+        # Turn / River Raise Level
+        if (is_turn or is_river) and not monster:
+            if (has_3flush_board or is_underpair) and call_chips > pot * 0.20:
                 return _build("fold", None, table, allowed,
-                              eq=equity, po=pot_odds, msg="River non-monster dangerous board fold")
-            if call_chips > pot * 0.35:
+                              eq=equity, po=pot_odds, msg="Dangerous board fold")
+            if call_chips > pot * 0.30:
                 return _build("fold", None, table, allowed,
-                              eq=equity, po=pot_odds, msg="River non-monster heavy bet fold")
+                              eq=equity, po=pot_odds, msg="Non-monster heavy bet fold")
 
         if risk_ratio > max_risk and equity < stack_off_req:
             return _build("fold", None, table, allowed,
@@ -300,11 +310,7 @@ def decide(table: dict, deadline_s: float = 10.0,
             return _build("fold", None, table, allowed,
                           eq=equity, po=pot_odds, msg="Overbet fold")
 
-        if call_chips > pot * 0.4 and draw and equity < 0.60:
-            return _build("fold", None, table, allowed,
-                          eq=equity, po=pot_odds, msg="Weak draw fold")
-
-        # Flop OOP Check-Raise Monster
+        # OOP Flop Monster Check-Raise
         if is_flop and not in_pos and monster and equity >= 0.80 and allowed.get("canRaise"):
             rr = allowed.get("raiseRange") or {}
             min_r = int(rr.get("min") or call_chips * 2)
@@ -316,13 +322,14 @@ def decide(table: dict, deadline_s: float = 10.0,
         # Overbet Raise
         if true_monster and equity >= stack_off_req and allowed.get("canRaise"):
             rr = allowed.get("raiseRange") or {}
-            min_r = int(rr.get("min") or call_chips*2)
+            min_r = int(rr.get("min") or call_chips * 2)
             max_r = int(rr.get("max") or min_r)
-            size = min(max_r, max(min_r, int(pot*1.25)+call_chips))
+            size = min(max_r, max(min_r, int(pot * 1.25) + call_chips))
             return _build("raise", size, table, allowed,
                           eq=equity, po=pot_odds, msg="Monster Overbet Raise")
 
-        if equity > pot_odds + 0.12:
+        call_margin = 0.18 if (is_turn or is_river) else 0.14
+        if equity > pot_odds + call_margin:
             return _build("call", None, table, allowed,
                           eq=equity, po=pot_odds, msg="Call Solid")
 
@@ -341,35 +348,28 @@ def decide(table: dict, deadline_s: float = 10.0,
                 return _build("check", None, table, allowed,
                               eq=equity, po=0, msg="Air/Underpair 100% Check")
 
+        # No Double Barrel 
         if is_turn and not true_monster:
             if "check" in available:
                 return _build("check", None, table, allowed,
                               eq=equity, po=0, msg="Turn Pot Control Check (Anti-Double-Barrel)")
 
-        # True Monster 
+        # True Monster
         if true_monster and equity >= 0.82:
             br = allowed.get("betRange") or {}
-            min_b = int(br.get("min") or pot//2 or 1)
+            min_b = int(br.get("min") or pot // 2 or 1)
             max_b = int(br.get("max") or min_b)
-            size = min(max_b, max(min_b, int(pot*1.30)))
+            size = min(max_b, max(min_b, int(pot * 1.30)))
             return _build("bet", size, table, allowed,
                           eq=equity, po=0, msg="True Monster Overbet")
 
         if equity > 0.78:
             br = allowed.get("betRange") or {}
-            min_b = int(br.get("min") or pot//2 or 1)
+            min_b = int(br.get("min") or pot // 2 or 1)
             max_b = int(br.get("max") or min_b)
-            size = min(max_b, max(min_b, int(pot*0.75)))
+            size = min(max_b, max(min_b, int(pot * 0.75)))
             return _build("bet", size, table, allowed,
                           eq=equity, po=0, msg="Solid Value Bet")
-
-        if draw and 0.45 <= equity <= 0.65 and is_flop:
-            br = allowed.get("betRange") or {}
-            min_b = int(br.get("min") or pot//3 or 1)
-            max_b = int(br.get("max") or min_b)
-            size = min(max_b, max(min_b, int(pot*0.45)))
-            return _build("bet", size, table, allowed,
-                          eq=equity, po=0, msg="Semi-Bluff Draw")
 
     if "check" in available:
         return _build("check", None, table, allowed,
