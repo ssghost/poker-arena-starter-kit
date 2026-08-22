@@ -14,9 +14,8 @@ CREDS_PATH = Path(".arena-credentials")
 BASE_URL = "https://arena.dev.fun/api/arena"
 BIG_BLIND = 2
 DEFAULT_HANDS = 10
-PROGRESS_INTERVAL = 5
-WAIT_LOG_INTERVAL = 150
 REJOIN_INTERVAL = 300  
+STATUS_REPORT_INTERVAL = 600  
 
 def load_agent(agent_path: str):
     p = Path(agent_path).resolve()
@@ -40,13 +39,6 @@ def load():
         sys.exit(1)
     return json.loads(CREDS_PATH.read_text())["apiKey"]
 
-def get_stack(table: dict):
-    self_seat = table.get("selfSeatNumber")
-    for s in table.get("seats", []):
-        if s.get("seatNumber") == self_seat:
-            return int(s.get("stackChips") or 0)
-    return 0
-
 def try_join(client, headers, competition_id, silent: bool = False):
     if not silent:
         print("[arena] attempting to join competition...")
@@ -69,28 +61,30 @@ def try_join(client, headers, competition_id, silent: bool = False):
         if not silent:
             print(f"[arena] join failed: {e}")
 
-def leave_competition(client, headers, competition_id, silent: bool = False):
+def leave_competition(client, headers, competition_id, silent: bool = True):
     try:
-        client.post(
+        r = client.post(
             f"{BASE_URL}/texas/leave",
             headers=headers,
             json={"competitionId": competition_id},
+            timeout=10.0,
         )
         if not silent:
-            print("[arena] left table")
+            print(f"[arena] left competition ({r.status_code})")
     except Exception as e:
         if not silent:
             print(f"[arena] leave failed: {e}")
 
-def join_competition(client, headers, competition_id, silent: bool = False):
+def join_competition(client, headers, competition_id, silent: bool = True):
     try:
-        client.post(
+        r = client.post(
             f"{BASE_URL}/texas/join",
             headers=headers,
             json={"competitionId": competition_id},
+            timeout=10.0,
         )
         if not silent:
-            print("[arena] rejoined table")
+            print(f"[arena] rejoined table ({r.status_code})")
     except Exception as e:
         if not silent:
             print(f"[arena] rejoin failed: {e}")
@@ -103,7 +97,7 @@ def print_analytics(chunk_hands, wins, losses, pushes, net, elapsed,
     vpip_pct = (vpip_hands / chunk_hands * 100) if chunk_hands else 0
     pfr_pct = (pfr_hands / chunk_hands * 100) if chunk_hands else 0
 
-    print(f"\n--- {chunk_title} Hands Analytics ---")
+    print(f"\n{chunk_title} Hands Analytics")
     print(f"  hands       : {chunk_hands}")
     print(f"  opponent    : Arena Live")
     print(f"  wins/losses : {wins}/{losses}  (push: {pushes})")
@@ -115,14 +109,13 @@ def print_analytics(chunk_hands, wins, losses, pushes, net, elapsed,
     print(f"  River Calls : {river_calls}")
     print(f"  Big Wins    : {len(big_wins)} hands (>=50 chips win: {big_wins})")
     print(f"  Big Losses  : {len(big_losses)} hands (>=50 chips loss: {big_losses})")
-    print("-" * 32 + "\n")
 
 def run_pvp_loop(competition_id: str, decide_fn, max_hands: int,
                  run_until_big_loss: bool = False,
                  run_until_big_win_or_loss: bool = False,
                  continuous: bool = False):
     key = load()
-    headers = {"x-arena-api-key": key}
+    headers = {"x-arena-api-key": key, "Content-Type": "application/json"}
     client = httpx.Client(timeout=20.0)
     
     if continuous:
@@ -131,7 +124,7 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int,
     try_join(client, headers, competition_id, silent=continuous)
 
     if not continuous:
-        print(f"[arena] hero=decide()")
+        print("[arena] hero=decide()")
         print(f"[arena] competition={competition_id}")
         print(f"[arena] blinds=1/{BIG_BLIND}")
 
@@ -169,130 +162,135 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int,
     
     consecutive_heavy_loss_chunks = 0
 
-    prev_stack = None
     initial_stack = None
+    last_known_chips = None
+    start_server_hands = None
+    last_server_hands = None
     last_table_snapshot = None
 
-    tracked_hands = {}
+    current_hand_actions = {"vpip": False, "pfr": False, "river_call": False}
 
-    last_wait_log = time.time()
     last_rejoin_time = time.time()
+    last_status_report_time = time.time()
 
     stop_run = False
 
-    while (infinite_hands_mode or hands < max_hands) and not stop_run:
-        if time.time() - last_rejoin_time > REJOIN_INTERVAL:
-            if not continuous:
-                print("[arena] 300s elapsed → force rejoin")
-            leave_competition(client, headers, competition_id, silent=continuous)
-            time.sleep(2)
-            join_competition(client, headers, competition_id, silent=continuous)
-            last_rejoin_time = time.time()
+    try:
+        while (infinite_hands_mode or hands < max_hands) and not stop_run:
+            now = time.time()
 
-        try:
-            resp = client.get(
-                f"{BASE_URL}/texas/pending-actions",
-                params={"competitionId": competition_id},
-                headers=headers,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-        except Exception:
-            time.sleep(1)
-            continue
+            if now - last_status_report_time >= STATUS_REPORT_INTERVAL:
+                time_str = time.strftime("%Y-%m-%d %H:%M:%S")
+                print(f"[{time_str}] Periodic Status: {hands} hands completed | Net chips: {net:+d}")
+                last_status_report_time = now
 
-        tables = data.get("tables", [])
+            if now - last_rejoin_time > REJOIN_INTERVAL:
+                leave_competition(client, headers, competition_id, silent=True)
+                time.sleep(2)
+                join_competition(client, headers, competition_id, silent=True)
+                last_rejoin_time = time.time()
 
-        if not tables:
-            if not continuous and (time.time() - last_wait_log > WAIT_LOG_INTERVAL):
-                print("[arena] waiting for table / opponent...")
-                last_wait_log = time.time()
-            time.sleep(1)
-            continue
+            try:
+                resp = client.get(
+                    f"{BASE_URL}/texas/pending-actions",
+                    params={"competitionId": competition_id},
+                    headers=headers,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+            except Exception:
+                time.sleep(1)
+                continue
 
-        for table in tables:
-            table_id = table.get("tableId")
-            stack = get_stack(table)
-            current_hand_id = table.get("handId") or table.get("roundId") or table.get("sequence") or table.get("handNumber")
+            participant = data.get("participant") or {}
+            tables = data.get("tables") or []
 
-            if stack < 20:
-                print(f"\n[ALERT] Low chips warning: stack = {stack} (< 20 chips).")
+            server_total_hands = participant.get("totalHands")
+            server_total_chips = participant.get("totalChips")
+            bankroll_chips = participant.get("bankrollChips", 0)
+            table_chips = participant.get("tableChips", 0)
+            
+            current_chips = server_total_chips if server_total_chips is not None else (bankroll_chips + table_chips)
+
+            if initial_stack is None and current_chips > 0:
+                initial_stack = current_chips
+                last_known_chips = current_chips
+                start_server_hands = server_total_hands if server_total_hands is not None else 0
+                last_server_hands = start_server_hands
+
+            if current_chips > 0 and current_chips < 20:
+                print(f"\n[ALERT] Low chips warning: stack = {current_chips} (< 20 chips).")
                 print("[ALERT] Exiting current table. Please rebuy chips manually.")
-                leave_competition(client, headers, competition_id, silent=continuous)
-                client.close()
-                return
+                stop_run = True
+                break
 
-            if initial_stack is None and stack:
-                initial_stack = stack
-                prev_stack = stack
+            if server_total_hands is not None and last_server_hands is not None and server_total_hands > last_server_hands:
+                hand_delta = server_total_hands - last_server_hands
+                chip_delta = current_chips - (last_known_chips if last_known_chips is not None else current_chips)
 
-            prev_hand_info = tracked_hands.get(table_id)
-            if prev_hand_info is not None and current_hand_id is not None and prev_hand_info.get("hand_id") != current_hand_id:
-                hands += 1
-                c_hands += 1
-                diff = stack - prev_hand_info["stack_at_start"]
-                net = stack - initial_stack
-                c_net += diff
+                hands += hand_delta
+                c_hands += hand_delta
+                net = current_chips - initial_stack
+                c_net += chip_delta
 
-                if prev_hand_info.get("vpip"):
+                if current_hand_actions["vpip"]:
                     vpip_hands += 1
                     c_vpip_hands += 1
-                if prev_hand_info.get("pfr"):
+                if current_hand_actions["pfr"]:
                     pfr_hands += 1
                     c_pfr_hands += 1
-                if prev_hand_info.get("river_call"):
+                if current_hand_actions["river_call"]:
                     river_calls += 1
                     c_river_calls += 1
 
-                if diff > 0:
+                current_hand_actions = {"vpip": False, "pfr": False, "river_call": False}
+
+                if chip_delta > 0:
                     wins += 1
                     c_wins += 1
-                    if diff >= 50:
-                        big_win_hands.append((hands, diff))
-                        c_big_wins.append((hands, diff))
+                    if chip_delta >= 50:
+                        big_win_hands.append((hands, chip_delta))
+                        c_big_wins.append((hands, chip_delta))
                         if last_table_snapshot:
                             with open("big_win_hands.jsonl", "a", encoding="utf-8") as f:
                                 f.write(json.dumps({
                                     "hand_num": hands,
-                                    "win_chips": diff,
+                                    "win_chips": chip_delta,
                                     "timestamp": time.time(),
                                     "table_snapshot": last_table_snapshot
                                 }, ensure_ascii=False) + "\n")
                         if run_until_big_win_or_loss:
-                            print(f"\n[ALERT] Big win detected: +{diff} chips at hand #{hands}.")
+                            print(f"\n[ALERT] Big win detected: +{chip_delta} chips at hand #{hands}.")
                             stop_run = True
-                elif diff < 0:
+                elif chip_delta < 0:
                     losses += 1
                     c_losses += 1
-                    if abs(diff) >= 50:
-                        big_loss_hands.append((hands, diff))
-                        c_big_losses.append((hands, diff))
+                    if abs(chip_delta) >= 50:
+                        big_loss_hands.append((hands, chip_delta))
+                        c_big_losses.append((hands, chip_delta))
                         if last_table_snapshot:
                             with open("big_loss_hands.jsonl", "a", encoding="utf-8") as f:
                                 f.write(json.dumps({
                                     "hand_num": hands,
-                                    "loss_chips": diff,
+                                    "loss_chips": chip_delta,
                                     "timestamp": time.time(),
                                     "table_snapshot": last_table_snapshot
                                 }, ensure_ascii=False) + "\n")
                         if run_until_big_loss or run_until_big_win_or_loss:
-                            print(f"\n[ALERT] Big loss detected: {diff} chips at hand #{hands}.")
+                            print(f"\n[ALERT] Big loss detected: {chip_delta} chips at hand #{hands}.")
                             stop_run = True
                 else:
                     pushes += 1
                     c_pushes += 1
 
-                if not continuous:
-                    target_str = f"/{max_hands}" if not infinite_hands_mode else ""
-                    if hands % PROGRESS_INTERVAL == 0 or stop_run or (not infinite_hands_mode and hands == max_hands):
-                        print(f"  ... {hands}{target_str} hands  net={net:+d} chips")
+                last_server_hands = server_total_hands
+                last_known_chips = current_chips
 
-    
                 if continuous and c_hands >= 50:
                     c_elapsed = time.time() - c_start
                     print_analytics(c_hands, c_wins, c_losses, c_pushes, c_net, c_elapsed,
                                     c_vpip_hands, c_pfr_hands, c_river_calls, c_big_wins, c_big_losses,
-                                    chunk_title=f"Hands {hands-c_hands+1}-{hands}")
+                                    chunk_title=f"Hands {hands - c_hands + 1}-{hands}")
                     
                     if c_net < -50:
                         consecutive_heavy_loss_chunks += 1
@@ -306,66 +304,66 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int,
                     c_wins = c_losses = c_pushes = 0
                     c_net = 0
                     c_start = time.time()
-                    c_vpip_hands = 0
-                    c_pfr_hands = 0
-                    c_river_calls = 0
+                    c_vpip_hands = c_pfr_hands = c_river_calls = 0
                     c_big_wins, c_big_losses = [], []
 
-                if stop_run:
+                if stop_run or (not infinite_hands_mode and hands >= max_hands):
+                    stop_run = True
                     break
-            
-            if table_id not in tracked_hands or (current_hand_id is not None and tracked_hands[table_id].get("hand_id") != current_hand_id):
-                tracked_hands[table_id] = {
-                    "hand_id": current_hand_id,
-                    "stack_at_start": stack,
-                    "vpip": False,
-                    "pfr": False,
-                    "river_call": False
-                }
 
-            if not table.get("allowedActions"):
+            if not tables:
+                time.sleep(1)
                 continue
 
-            last_table_snapshot = table
+            for table in tables:
+                last_table_snapshot = table
+                table_id = table.get("tableId") or table.get("id")
 
-            action = decide_fn(table, deadline_s=5)
-            action["tableId"] = table_id
+                if not table.get("allowedActions"):
+                    continue
 
-            act_name = str(action.get("action", "")).lower()
-            street = str(table.get("street", "")).lower()
+                action = decide_fn(table, deadline_s=5)
+                action["tableId"] = table_id
 
-            if act_name in ["call", "bet", "raise", "all-in", "all_in"]:
-                tracked_hands[table_id]["vpip"] = True
-            if act_name in ["raise", "bet"]:
-                tracked_hands[table_id]["pfr"] = True
-            if street == "river" and act_name == "call":
-                tracked_hands[table_id]["river_call"] = True
+                act_name = str(action.get("action", "")).lower()
+                street = str(table.get("street", "")).lower()
 
-            try:
-                client.post(
-                    f"{BASE_URL}/texas/action",
-                    headers=headers,
-                    json=action,
-                )
-            except Exception:
-                continue
+                if act_name in ["call", "bet", "raise", "all-in", "all_in"]:
+                    current_hand_actions["vpip"] = True
+                if act_name in ["raise", "bet"]:
+                    current_hand_actions["pfr"] = True
+                if street == "river" and act_name == "call":
+                    current_hand_actions["river_call"] = True
 
-        time.sleep(0.3)
+                try:
+                    client.post(
+                        f"{BASE_URL}/texas/action",
+                        headers=headers,
+                        json=action,
+                    )
+                except Exception:
+                    continue
 
-    client.close()
+            time.sleep(0.3)
 
-    if continuous and c_hands > 0:
-        c_elapsed = time.time() - c_start
-        start_hand = hands - c_hands + 1
-        print_analytics(c_hands, c_wins, c_losses, c_pushes, c_net, c_elapsed,
-                        c_vpip_hands, c_pfr_hands, c_river_calls, c_big_wins, c_big_losses,
-                        chunk_title=f"Final Partial (Hands {start_hand}-{hands})")
+    except KeyboardInterrupt:
+        print("\n[arena] Interrupted by user.")
+    finally:
+        leave_competition(client, headers, competition_id, silent=True)
+        client.close()
 
-    if not continuous:
-        elapsed = time.time() - start
-        print_analytics(hands, wins, losses, pushes, net, elapsed,
-                        vpip_hands, pfr_hands, river_calls, big_win_hands, big_loss_hands,
-                        chunk_title="Total")
+        if continuous and c_hands > 0:
+            c_elapsed = time.time() - c_start
+            start_hand = hands - c_hands + 1
+            print_analytics(c_hands, c_wins, c_losses, c_pushes, c_net, c_elapsed,
+                            c_vpip_hands, c_pfr_hands, c_river_calls, c_big_wins, c_big_losses,
+                            chunk_title=f"Final Partial (Hands {start_hand}-{hands})")
+
+        if not continuous or hands > 0:
+            elapsed = time.time() - start
+            print_analytics(hands, wins, losses, pushes, net, elapsed,
+                            vpip_hands, pfr_hands, river_calls, big_win_hands, big_loss_hands,
+                            chunk_title="Total")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
