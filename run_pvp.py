@@ -1,5 +1,6 @@
 import argparse
 import json
+import math
 import sys
 import time
 import importlib.util
@@ -89,13 +90,23 @@ def join_competition(client, headers, competition_id, silent: bool = True):
         if not silent:
             print(f"[arena] rejoin failed: {e}")
 
+def calc_sharpe(deltas: list) -> float:
+    if not deltas or len(deltas) <= 1:
+        return 0.0
+    mean = sum(deltas) / len(deltas)
+    variance = sum((x - mean) ** 2 for x in deltas) / (len(deltas) - 1)
+    std_dev = math.sqrt(variance)
+    return (mean / std_dev) if std_dev > 0 else 0.0
+
 def print_analytics(chunk_hands, wins, losses, pushes, net, elapsed,
                     vpip_hands, pfr_hands, river_calls, big_wins, big_losses,
+                    deltas=None,
                     chunk_title="50"):
     hands_per_sec = chunk_hands / elapsed if elapsed > 0 else 0
     bb100 = (net / chunk_hands * (100 / BIG_BLIND)) if chunk_hands else 0
     vpip_pct = (vpip_hands / chunk_hands * 100) if chunk_hands else 0
     pfr_pct = (pfr_hands / chunk_hands * 100) if chunk_hands else 0
+    sharpe = calc_sharpe(deltas) if deltas else 0.0
 
     print(f"\n{chunk_title} Hands Analytics")
     print(f"  hands       : {chunk_hands}")
@@ -103,6 +114,7 @@ def print_analytics(chunk_hands, wins, losses, pushes, net, elapsed,
     print(f"  wins/losses : {wins}/{losses}  (push: {pushes})")
     print(f"  net chips   : {net:+d}")
     print(f"  bb/100      : {bb100:+.1f}")
+    print(f"  Sharpe      : {sharpe:+.3f}")
     print(f"  elapsed     : {elapsed:.1f}s  ({hands_per_sec:.2f} hands/s)")
     print(f"  VPIP %      : {vpip_pct:.1f}% ({vpip_hands}/{chunk_hands})")
     print(f"  PFR %      : {pfr_pct:.1f}% ({pfr_hands}/{chunk_hands})")
@@ -131,7 +143,7 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int,
     infinite_hands_mode = run_until_big_loss or run_until_big_win_or_loss or continuous
 
     if continuous:
-        print("[arena] mode: continuous background (silent, report per 50 hands, stop on big loss / 2x heavy loss chunks) ...")
+        print("[arena] mode: continuous background (silent, report per 50 hands, stop on big loss / 2x negative Sharpe chunks) ...")
     elif run_until_big_win_or_loss:
         print("[arena] mode: run until big win or loss (>=50 chips) ...")
     elif run_until_big_loss:
@@ -149,6 +161,7 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int,
     river_calls = 0
     big_loss_hands = []
     big_win_hands = []
+    hand_deltas = []
 
     c_hands = 0
     c_wins = c_losses = c_pushes = 0
@@ -159,8 +172,9 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int,
     c_river_calls = 0
     c_big_wins = []
     c_big_losses = []
+    c_hand_deltas = []
     
-    consecutive_heavy_loss_chunks = 0
+    consecutive_negative_sharpe_chunks = 0
 
     initial_stack = None
     last_known_chips = None
@@ -179,7 +193,7 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int,
         while (infinite_hands_mode or hands < max_hands) and not stop_run:
             now = time.time()
 
-            if now - last_status_report_time >= STATUS_REPORT_INTERVAL:
+            if not continuous and (now - last_status_report_time >= STATUS_REPORT_INTERVAL):
                 time_str = time.strftime("%Y-%m-%d %H:%M:%S")
                 print(f"[{time_str}] Periodic Status: {hands} hands completed | Net chips: {net:+d}")
                 last_status_report_time = now
@@ -232,6 +246,9 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int,
                 c_hands += hand_delta
                 net = current_chips - initial_stack
                 c_net += chip_delta
+
+                hand_deltas.append(chip_delta)
+                c_hand_deltas.append(chip_delta)
 
                 if current_hand_actions["vpip"]:
                     vpip_hands += 1
@@ -288,17 +305,19 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int,
 
                 if continuous and c_hands >= 50:
                     c_elapsed = time.time() - c_start
+                    c_sharpe = calc_sharpe(c_hand_deltas)
                     print_analytics(c_hands, c_wins, c_losses, c_pushes, c_net, c_elapsed,
                                     c_vpip_hands, c_pfr_hands, c_river_calls, c_big_wins, c_big_losses,
+                                    deltas=c_hand_deltas,
                                     chunk_title=f"Hands {hands - c_hands + 1}-{hands}")
                     
-                    if c_net < -50:
-                        consecutive_heavy_loss_chunks += 1
-                        if consecutive_heavy_loss_chunks >= 2:
-                            print(f"\n[ALERT] 2 consecutive 50-hand chunks lost >50 chips each. Stopping continuous mode.")
+                    if c_sharpe < 0:
+                        consecutive_negative_sharpe_chunks += 1
+                        if consecutive_negative_sharpe_chunks >= 2:
+                            print(f"\n[ALERT] 2 consecutive 50-hand chunks had negative Sharpe Ratio. Stopping continuous mode.")
                             stop_run = True
                     else:
-                        consecutive_heavy_loss_chunks = 0
+                        consecutive_negative_sharpe_chunks = 0
 
                     c_hands = 0
                     c_wins = c_losses = c_pushes = 0
@@ -306,6 +325,7 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int,
                     c_start = time.time()
                     c_vpip_hands = c_pfr_hands = c_river_calls = 0
                     c_big_wins, c_big_losses = [], []
+                    c_hand_deltas = []
 
                 if stop_run or (not infinite_hands_mode and hands >= max_hands):
                     stop_run = True
@@ -357,12 +377,14 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int,
             start_hand = hands - c_hands + 1
             print_analytics(c_hands, c_wins, c_losses, c_pushes, c_net, c_elapsed,
                             c_vpip_hands, c_pfr_hands, c_river_calls, c_big_wins, c_big_losses,
+                            deltas=c_hand_deltas,
                             chunk_title=f"Final Partial (Hands {start_hand}-{hands})")
 
         if not continuous or hands > 0:
             elapsed = time.time() - start
             print_analytics(hands, wins, losses, pushes, net, elapsed,
                             vpip_hands, pfr_hands, river_calls, big_win_hands, big_loss_hands,
+                            deltas=hand_deltas,
                             chunk_title="Total")
 
 if __name__ == "__main__":
