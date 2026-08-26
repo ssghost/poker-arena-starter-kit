@@ -1,81 +1,13 @@
 from __future__ import annotations
 import sys
 import random
+import math
 from typing import Optional
 from examples.agent import (
     _build,
-    _hand_class,
     estimate_equity,
     main,
 )
-
-DEEP_STACK_BB = 200
-SHORT_STACK_BB = 25
-
-DEEP_MAX_RISK = 0.25
-STD_MAX_RISK = 0.40
-
-STACK_OFF_REQ_STD = 0.88
-STACK_OFF_REQ_DEEP = 0.93
-
-RIVER_MARGIN_STD = 0.20
-RIVER_MARGIN_DEEP = 0.28
-
-OVERBET_REQ_STD = 0.75
-OVERBET_REQ_DEEP = 0.85
-
-KELLY_FRACTION_STD = 0.35
-KELLY_FRACTION_DEEP = 0.25
-
-PREMIUM_3BET = {"AA", "KK", "QQ", "JJ", "AKs", "AKo", "AQs"}
-PREMIUM = {"AA", "KK", "QQ", "JJ", "AKs", "AKo"}
-STRONG = {
-    "TT", "99", "88", "77",
-    "AQs", "AQo", "AJs", "AJo", "ATs",
-    "KQs", "KQo", "KJs", "KJo", "QJs", "JTs"
-}
-
-MEDIUM = {
-    "66", "55", "44", "33", "22",
-    "A9s", "A8s", "A7s", "A5s", "A4s", "A3s", "A2s",
-    "KTs", "QTs", "QJo", "JTo",
-    "T9s", "98s", "87s", "76s", "65s", "54s"
-}
-
-TRASH_OFFSUIT_LOW = {
-    ("2", "3"), ("2", "4"), ("2", "5"), ("2", "6"), ("2", "7"), ("2", "8"), ("2", "9"),
-    ("3", "4"), ("3", "5"), ("3", "6"), ("3", "7"), ("3", "8"), ("3", "9"),
-    ("4", "5"), ("4", "6"), ("4", "7"), ("4", "8"), ("4", "9"),
-    ("5", "6"), ("5", "7"), ("5", "8"), ("5", "9"),
-    ("6", "7"), ("6", "8"), ("6", "9"),
-    ("7", "8"), ("7", "9"),
-    ("2", "K"), ("3", "K"), ("4", "K"), ("5", "K"),
-    ("2", "Q"), ("3", "Q"), ("4", "Q"), ("5", "Q"),
-    ("2", "J"), ("3", "J"), ("4", "J"), ("5", "J"),
-    ("3", "8"), ("3", "9"), ("5", "9"), ("3", "Q"), ("3", "A")
-}
-
-def tier(cls: str) -> str:
-    if cls in PREMIUM: return "P"
-    if cls in STRONG: return "S"
-    if cls in MEDIUM: return "M"
-    return "W"
-
-def is_unsuited_trash(hole: list) -> bool:
-    if len(hole) != 2:
-        return False
-    c1, c2 = hole[0], hole[1]
-    if c1[-1] == c2[-1]:
-        return False
-    r1, r2 = c1[:-1], c2[:-1]
-    pair = tuple(sorted([r1, r2]))
-    if pair in TRASH_OFFSUIT_LOW:
-        return True
-    rank_order = "23456789TJQKA"
-    v1, v2 = rank_order.find(r1), rank_order.find(r2)
-    if min(v1, v2) <= 3 and max(v1, v2) <= 10:
-        return True
-    return False
 
 def get_stack(table: dict) -> int:
     self_seat = table.get("selfSeatNumber")
@@ -83,69 +15,6 @@ def get_stack(table: dict) -> int:
         if s.get("seatNumber") == self_seat:
             return int(s.get("stackChips") or 0)
     return 0
-
-def is_draw(board: list, hole: list) -> bool:
-    suits = [c[-1] for c in board + hole]
-    for s in "shdc":
-        if suits.count(s) >= 4:
-            return True
-    return False
-
-def is_true_monster(hole: list, board: list) -> bool:
-    if len(hole) != 2 or len(board) < 3:
-        return False
-    
-    hole_ranks = [c[:-1] for c in hole]
-    board_ranks = [c[:-1] for c in board]
-    is_pair = hole_ranks[0] == hole_ranks[1]
-    
-    if is_pair and hole_ranks[0] in board_ranks:
-        return True
-    
-    if not is_pair and hole_ranks[0] in board_ranks and hole_ranks[1] in board_ranks:
-        return True
-
-    suits = [c[-1] for c in hole + board]
-    if any(suits.count(s) >= 5 for s in "shdc"):
-        return True
-
-    return False
-
-def is_monster_hand(hole: list, board: list) -> bool:
-    if len(hole) != 2 or len(board) < 3:
-        return False
-    
-    if is_true_monster(hole, board):
-        return True
-
-    rank_order = "23456789TJQKA"
-    hole_ranks = [c[:-1] for c in hole]
-    board_ranks = [c[:-1] for c in board]
-    hole_vals = [rank_order.find(r) for r in hole_ranks]
-    board_vals = [rank_order.find(r) for r in board_ranks]
-    is_pair = hole_ranks[0] == hole_ranks[1]
-    
-    if is_pair and hole_vals[0] > max(board_vals):
-        return True
-
-    return False
-
-def is_top_pair_good_kicker(hole: list, board: list) -> bool:
-    if len(hole) != 2 or len(board) < 3:
-        return False
-    rank_order = "23456789TJQKA"
-    hole_ranks = [c[:-1] for c in hole]
-    board_ranks = [c[:-1] for c in board]
-    board_max_val = max(rank_order.find(r) for r in board_ranks)
-    
-    h0_val = rank_order.find(hole_ranks[0])
-    h1_val = rank_order.find(hole_ranks[1])
-    
-    if h0_val == board_max_val and h1_val >= 9:
-        return True
-    if h1_val == board_max_val and h0_val >= 9:
-        return True
-    return False
 
 def evaluate_board_texture(board: list) -> tuple[float, bool]:
     if len(board) < 3:
@@ -159,7 +28,7 @@ def evaluate_board_texture(board: list) -> tuple[float, bool]:
     
     suit_counts = [board_suits.count(s) for s in "shdc"]
     max_suit = max(suit_counts)
-    flush_wetness = 0.50 if max_suit >= 4 else (0.35 if max_suit == 3 else (0.15 if max_suit == 2 else 0.0))
+    flush_wetness = max(0.0, (max_suit - 1) / max(len(board) - 1, 1))
     
     vals = sorted([rank_order.find(r) for r in board_ranks])
     conn_count = 0
@@ -170,7 +39,7 @@ def evaluate_board_texture(board: list) -> tuple[float, bool]:
         elif diff == 2:
             conn_count += 1
             
-    conn_wetness = min(0.45, conn_count * 0.12)
+    conn_wetness = min(0.50, conn_count / max(len(vals) * 2, 1))
     paired_penalty = -0.10 if is_paired else 0.0
     
     wetness = max(0.0, min(1.0, flush_wetness + conn_wetness + paired_penalty))
@@ -202,76 +71,42 @@ def evaluate_blockers(hole: list, board: list) -> dict[str, bool]:
     
     return {"nfd_blocker": nfd_blocker, "top_blocker": top_blocker}
 
-def update_bayesian_equity(raw_eq: float, hole: list, board: list, call_chips: int, pot: int, bb: int, blockers: dict[str, bool], wetness: float) -> float:
-    if call_chips <= 0:
-        return raw_eq
-    
-    is_pf = len(board) == 0
-    is_flop = len(board) == 3
-    is_turn = len(board) == 4
-    is_river = len(board) == 5
-    
-    tm = is_true_monster(hole, board) if not is_pf else False
-    m = is_monster_hand(hole, board) if not is_pf else False
-    tptk = is_top_pair_good_kicker(hole, board) if not is_pf else False
-    
-    if is_pf:
-        cls = _hand_class(hole)
-        if call_chips >= bb * 15:
-            if cls == "AA": return 0.85
-            if cls == "KK": return 0.54
-            if cls == "QQ": return 0.42
-            if cls in ("JJ", "AKs", "AKo"): return 0.38
-            return max(0.15, raw_eq * 0.45)
-        elif call_chips >= bb * 5:
-            if cls == "AA": return 0.88
-            if cls == "KK": return 0.73
-            if cls in ("QQ", "JJ", "AKs"): return 0.60
-            if cls in ("TT", "99", "AKo", "AQs"): return 0.48
-            return max(0.18, raw_eq * 0.58)
-        elif call_chips >= bb * 2:
-            if cls in PREMIUM: return max(0.70, raw_eq)
-            if cls in STRONG: return max(0.55, raw_eq * 0.90)
-            return raw_eq * 0.84
+def compute_equity_realization(in_pos: bool, wetness: float, spr: float, street_idx: int) -> float:
+    pos_factor = 1.10 if in_pos else 0.90
+    wet_factor = 1.0 - (wetness * 0.15)
+    spr_factor = 1.0 / (1.0 + 0.02 * min(spr, 20.0))
+    street_factor = 1.0 + 0.03 * street_idx
+    return max(0.50, min(1.30, pos_factor * wet_factor * spr_factor * street_factor))
+
+def dynamic_kelly_fraction(stack_bb: float) -> float:
+    return max(0.05, min(0.35, 1.0 / (2.0 + (max(stack_bb, 1.0) / 60.0))))
+
+def dynamic_max_risk(stack_bb: float, spr: float) -> float:
+    return max(0.10, min(0.50, 1.0 / (2.0 + 0.15 * spr + 0.01 * max(stack_bb, 1.0))))
+
+def dynamic_stack_off_req(stack_bb: float, wetness: float) -> float:
+    base = 0.50 + 0.50 * (max(stack_bb, 1.0) / (max(stack_bb, 1.0) + 30.0))
+    return min(0.98, max(0.60, base + 0.05 * wetness))
+
+def update_bayesian_equity(raw_eq: float, call_chips: int, pot: int, blockers: dict[str, bool], wetness: float, street_idx: int) -> float:
+    if call_chips <= 0 or pot <= 0:
         return raw_eq
 
-    bet_ratio = call_chips / max(pot, 1)
-    wet_discount = 1.0 - (wetness * 0.25)
+    beta = call_chips / max(pot, 1)
+    decay = 1.0 + beta * (1.0 + 0.5 * street_idx) * (1.0 + 0.8 * wetness)
     
-    if tm:
-        if bet_ratio > 1.0:
-            return max(0.70, raw_eq * 0.94)
-        return raw_eq
-    
-    blocker_bonus = 0.08 if blockers.get("nfd_blocker") else 0.0
-    
-    if m:
-        base = raw_eq * (0.75 if (is_river and bet_ratio > 0.40) else (0.82 if (is_turn and bet_ratio > 0.50) else 0.90))
-        return min(0.95, base * wet_discount + blocker_bonus)
-    
-    if tptk:
-        if is_river:
-            base = raw_eq * (0.50 if bet_ratio > 0.50 else (0.65 if bet_ratio > 0.25 else 0.80))
-        elif is_turn:
-            base = raw_eq * (0.60 if bet_ratio > 0.50 else (0.72 if bet_ratio > 0.25 else 0.85))
-        else:
-            base = raw_eq * (0.70 if bet_ratio > 0.60 else 0.88)
-        return min(0.92, base * wet_discount + blocker_bonus)
-    
-    if is_draw(board, hole):
-        base = raw_eq * (0.60 if bet_ratio > 0.50 else (0.75 if bet_ratio > 0.25 else 0.88))
-        return min(0.90, base + blocker_bonus)
-    
-    if is_river:
-        return raw_eq * (0.35 if bet_ratio > 0.25 else 0.55) * wet_discount
-    if is_turn:
-        return raw_eq * (0.45 if bet_ratio > 0.30 else 0.65) * wet_discount
-    if bet_ratio > 0.40:
-        return raw_eq * 0.50 * wet_discount
-        
-    return raw_eq * 0.75 * wet_discount
+    if blockers.get("nfd_blocker"):
+        decay *= 0.85
+    if blockers.get("top_blocker"):
+        decay *= 0.90
 
-def kelly_criterion_fraction(equity: float, pot: int, call_chips: int, fraction: float = 0.35) -> float:
+    clamped_eq = max(0.01, min(0.99, raw_eq))
+    prior_odds = clamped_eq / (1.0 - clamped_eq)
+    post_odds = prior_odds / max(1.0, decay)
+    post_eq = post_odds / (1.0 + post_odds)
+    return max(0.02, min(0.98, post_eq))
+
+def kelly_criterion_fraction(equity: float, pot: int, call_chips: int, fraction: float) -> float:
     if call_chips <= 0:
         b = max(pot, 1) / max(pot * 0.5, 1.0)
     else:
@@ -289,31 +124,33 @@ def compute_kelly_bet_size(equity: float, pot: int, min_b: int, max_b: int, frac
     edge = max(0.0, (equity - 0.50) * 2.0)
     if edge <= 0.0:
         return min_b
-    spr_mod = 1.20 if spr < 4.0 else (0.85 if spr > 12.0 else 1.0)
-    wet_mod = 1.0 + (wetness * 0.20)
-    f_star = fraction * edge * spr_mod
-    scaling = (0.40 + f_star * 1.60) * wet_mod
+    spr_factor = 1.0 + max(-0.30, min(0.30, (5.0 - spr) * 0.06))
+    wet_factor = 1.0 + (wetness * 0.22)
+    f_star = fraction * edge * spr_factor
+    scaling = (0.33 + f_star * 1.65) * wet_factor
     target = int(pot * scaling)
     return min(max_b, max(min_b, target))
 
-def compute_dynamic_open_size(equity: float, in_pos: bool, bb: int, min_r: int, max_r: int, t: str, pot: int) -> int:
-    pos_factor = 2.0 if in_pos else 2.3
-    if t == "P":
-        tier_add = 0.8
-    elif t == "S":
-        tier_add = 0.4
-    else:
-        tier_add = max(0.0, (equity - 0.48) * 1.2)
-    dead_money_add = max(0, pot - int(bb * 1.5)) if pot > bb * 2 else 0
-    target = int(bb * (pos_factor + tier_add)) + dead_money_add
+def compute_dynamic_open_size(equity: float, in_pos: bool, bb: int, min_r: int, max_r: int, pot: int) -> int:
+    pos_mult = 2.0 if in_pos else 2.35
+    edge_add = max(0.0, (equity - 0.45) * 2.0)
+    dead_money = max(0, pot - int(bb * 1.5))
+    target = int(bb * (pos_mult + edge_add)) + dead_money
+    return min(max_r, max(min_r, target))
+
+def compute_dynamic_3bet_size(pot: int, call_chips: int, in_pos: bool, equity: float, min_r: int, max_r: int) -> int:
+    mult = (2.6 if in_pos else 3.2) + max(0.0, (equity - 0.55) * 2.0)
+    target = int(call_chips * mult) + int(pot * 0.30)
     return min(max_r, max(min_r, target))
 
 def compute_dynamic_cbet_size(equity: float, pot: int, min_b: int, max_b: int, in_pos: bool, wetness: float, spr: float) -> int:
-    base_ratio = 0.24 if in_pos else 0.28
-    edge_ratio = max(0.0, (equity - 0.48) * 0.25)
-    spr_ratio = -0.05 if spr > 10.0 else (0.05 if spr < 3.0 else 0.0)
-    wet_ratio = wetness * 0.12
-    target = int(pot * (base_ratio + edge_ratio + spr_ratio + wet_ratio))
+    alpha = min_b / max(pot + min_b, 1)
+    base_ratio = alpha * (0.8 if in_pos else 1.0)
+    edge_ratio = max(0.0, (equity - 0.45) * 0.5)
+    wet_ratio = wetness * 0.20
+    spr_adjust = -0.05 if spr > 8.0 else (0.05 if spr < 2.5 else 0.0)
+    ratio = min(0.75, max(0.20, base_ratio + edge_ratio + wet_ratio + spr_adjust))
+    target = int(pot * ratio)
     return min(max_b, max(min_b, target))
 
 def decide(table: dict, deadline_s: float = 10.0,
@@ -334,279 +171,118 @@ def decide(table: dict, deadline_s: float = 10.0,
     stack = get_stack(table)
 
     bb = max(int(table.get("bigBlindChips") or table.get("bigBlind") or 2), 1)
-    stack_bb = stack / bb if bb else 100
+    stack_bb = stack / bb if bb else 100.0
     spr = stack / max(pot, 1)
 
-    pot_odds = call_chips / max(pot + call_chips, 1) if call_chips else 0
-    risk_ratio = call_chips / stack if stack > 0 else 0
+    pot_odds = call_chips / max(pot + call_chips, 1) if call_chips else 0.0
+    mdf = 1.0 - pot_odds if pot_odds > 0 else 1.0
+    risk_ratio = call_chips / stack if stack > 0 else 0.0
 
     btn = table.get("buttonSeatNumber")
     in_pos = self_seat == btn
 
-    cls = _hand_class(hole)
-    t = tier(cls)
+    is_pf = len(board) == 0
+    street_idx = 0 if is_pf else (1 if len(board) == 3 else (2 if len(board) == 4 else 3))
 
     wetness, is_paired_board = evaluate_board_texture(board)
     blockers = evaluate_blockers(hole, board)
 
-    if stack_bb > DEEP_STACK_BB:
-        max_risk = DEEP_MAX_RISK
-        stack_off_req = STACK_OFF_REQ_DEEP
-        river_margin = RIVER_MARGIN_DEEP
-        overbet_req = OVERBET_REQ_DEEP
-        kelly_f = KELLY_FRACTION_DEEP
-    else:
-        max_risk = STD_MAX_RISK
-        stack_off_req = STACK_OFF_REQ_STD
-        river_margin = RIVER_MARGIN_STD
-        overbet_req = OVERBET_REQ_STD
-        kelly_f = KELLY_FRACTION_STD
+    max_risk = dynamic_max_risk(stack_bb, spr)
+    stack_off_req = dynamic_stack_off_req(stack_bb, wetness)
+    kelly_f = dynamic_kelly_fraction(stack_bb)
+    realization = compute_equity_realization(in_pos, wetness, spr, street_idx)
 
-    if not board and stack_bb <= SHORT_STACK_BB:
-        if t in ("P", "S", "M") and allowed.get("canRaise"):
+    sims_count = 500 if is_pf else 700
+    raw_equity = estimate_equity(hole, board, sims=sims_count, deadline_s=deadline_s)
+    equity = update_bayesian_equity(raw_equity, call_chips, pot, blockers, wetness, street_idx)
+    realized_equity = min(0.99, equity * realization)
+    kf = kelly_criterion_fraction(realized_equity, pot, call_chips, fraction=kelly_f)
+
+    short_stack_threshold = (8.0 + (4.0 if in_pos else 0.0)) * (1.5 if bb else 1.0)
+    if is_pf and stack_bb <= short_stack_threshold:
+        if realized_equity >= 0.50 and allowed.get("canRaise"):
             rr = allowed.get("raiseRange") or {}
             max_r = int(rr.get("max") or stack)
-            return _build("raise", max_r, table, allowed,
-                          eq=0.5, po=0, msg="Push short")
+            return _build("raise", max_r, table, allowed, eq=equity, po=0, msg="Push short")
         if "check" in available:
             return _build("check", None, table, allowed, eq=0, po=0, msg="Check short")
         return _build("fold", None, table, allowed, eq=0, po=pot_odds, msg="Fold short")
 
-    if not board:
-        if call_chips > 0 and (is_unsuited_trash(hole) or t == "W"):
-            if "check" in available:
-                return _build("check", None, table, allowed, eq=0, po=0, msg="Trash check PF")
-            return _build("fold", None, table, allowed, eq=0, po=pot_odds, msg="Trash fold PF")
-
-        raw_equity = estimate_equity(hole, board, sims=500, deadline_s=deadline_s)
-        equity = update_bayesian_equity(raw_equity, hole, board, call_chips, pot, bb, blockers, wetness)
-        kf = kelly_criterion_fraction(equity, pot, call_chips, fraction=kelly_f)
-
+    if is_pf:
         if call_chips <= bb:
-            if t in ("P", "S") or (t == "M" and (in_pos or call_chips == 0 or random.random() < 0.75)):
+            opponents_behind = max(1, sum(1 for s in seats if s.get("status") == "Active" and s.get("seatNumber") != self_seat))
+            p_fold_each = 0.45 + (0.10 if in_pos else 0.0)
+            p_fold_all = p_fold_each ** opponents_behind
+            
+            min_r = int((allowed.get("raiseRange") or {}).get("min") or bb * 2)
+            max_r = int((allowed.get("raiseRange") or {}).get("max") or min_r)
+            open_size = compute_dynamic_open_size(realized_equity, in_pos, bb, min_r, max_r, pot)
+            
+            ev_raise = p_fold_all * pot + (1.0 - p_fold_all) * (realized_equity * (pot + open_size * 2) - open_size)
+            
+            if ev_raise > 0 and (allowed.get("canRaise") or allowed.get("canBet")):
                 if allowed.get("canRaise"):
-                    rr = allowed.get("raiseRange") or {}
-                    min_r = int(rr.get("min") or bb * 2)
-                    max_r = int(rr.get("max") or min_r)
-                    size = compute_dynamic_open_size(raw_equity, in_pos, bb, min_r, max_r, t, pot)
-                    return _build("raise", size, table, allowed,
-                                  eq=equity, po=pot_odds, msg="Open PFR TAG")
-                elif allowed.get("canBet"):
-                    br = allowed.get("betRange") or {}
-                    min_b = int(br.get("min") or bb * 2)
-                    max_b = int(br.get("max") or min_b)
-                    size = compute_dynamic_open_size(raw_equity, in_pos, bb, min_b, max_b, t, pot)
-                    return _build("bet", size, table, allowed,
-                                  eq=equity, po=0, msg="Open PFR Bet")
+                    return _build("raise", open_size, table, allowed, eq=equity, po=pot_odds, msg="Dynamic EV Open Raise")
+                if allowed.get("canBet"):
+                    return _build("bet", open_size, table, allowed, eq=equity, po=0, msg="Dynamic EV Open Bet")
 
             if "check" in available:
-                return _build("check", None, table, allowed, eq=0.5, po=0, msg="Check BB PF")
+                return _build("check", None, table, allowed, eq=equity, po=0, msg="Check BB PF")
             
-            if t in ("P", "S", "M"):
-                return _build("call", None, table, allowed, eq=0.5, po=pot_odds, msg="Call 1BB PF")
+            ev_call = realized_equity * (pot + call_chips) - call_chips
+            if ev_call >= 0:
+                return _build("call", None, table, allowed, eq=equity, po=pot_odds, msg="Call Limp EV")
 
-            return _build("fold", None, table, allowed, eq=0, po=pot_odds, msg="Fold PF")
+            return _build("fold", None, table, allowed, eq=equity, po=pot_odds, msg="Fold PF Unopened")
 
         if risk_ratio > max_risk and equity < stack_off_req:
-            return _build("fold", None, table, allowed,
-                          eq=equity, po=pot_odds, msg="Risk fold PF")
+            return _build("fold", None, table, allowed, eq=equity, po=pot_odds, msg="Risk fold PF")
 
-        if call_chips >= bb * 15:
-            if cls == "AA":
-                if allowed.get("canRaise"):
-                    rr = allowed.get("raiseRange") or {}
-                    max_r = int(rr.get("max") or stack)
-                    return _build("raise", max_r, table, allowed, eq=equity, po=pot_odds, msg="AA All-In PF")
-                return _build("call", None, table, allowed, eq=equity, po=pot_odds, msg="AA Call PF")
-            elif cls == "KK" and call_chips <= bb * 35 and kf > 0.08:
-                return _build("call", None, table, allowed, eq=equity, po=pot_odds, msg="KK Flat Extreme 4bet PF")
-            else:
-                return _build("fold", None, table, allowed, eq=equity, po=pot_odds, msg="Fold Extreme 4bet+ PF")
+        ev_call = realized_equity * (pot + call_chips) - call_chips
+        if ev_call >= 0 or realized_equity >= pot_odds:
+            if kf > 0.08 and allowed.get("canRaise"):
+                rr = allowed.get("raiseRange") or {}
+                min_r = int(rr.get("min") or call_chips * 2)
+                max_r = int(rr.get("max") or min_r)
+                size = compute_dynamic_3bet_size(pot, call_chips, in_pos, realized_equity, min_r, max_r)
+                return _build("raise", size, table, allowed, eq=equity, po=pot_odds, msg="Dynamic Value 3bet")
+            return _build("call", None, table, allowed, eq=equity, po=pot_odds, msg="Dynamic Call PF")
 
-        elif call_chips >= bb * 5:
-            if cls == "AA":
-                if allowed.get("canRaise"):
-                    rr = allowed.get("raiseRange") or {}
-                    min_r = int(rr.get("min") or call_chips * 2)
-                    max_r = int(rr.get("max") or min_r)
-                    size = min(max_r, max(min_r, int(pot * 0.90) + call_chips))
-                    return _build("raise", size, table, allowed, eq=equity, po=pot_odds, msg="AA 4bet PF")
-                return _build("call", None, table, allowed, eq=equity, po=pot_odds, msg="AA Call PF")
-            elif cls == "KK":
-                return _build("call", None, table, allowed, eq=equity, po=pot_odds, msg="KK Control Flat 4bet PF")
-            elif cls in ("QQ", "JJ", "AKs") and in_pos and kf > 0.06:
-                return _build("call", None, table, allowed, eq=equity, po=pot_odds, msg="Strong Pos Flat 3bet PF")
-            else:
-                return _build("fold", None, table, allowed, eq=equity, po=pot_odds, msg="Fold 3bet PF")
-
-        else:
-            if cls in PREMIUM_3BET:
-                if allowed.get("canRaise"):
-                    rr = allowed.get("raiseRange") or {}
-                    min_r = int(rr.get("min") or call_chips * 2)
-                    max_r = int(rr.get("max") or min_r)
-                    size = min(max_r, max(min_r, int(pot * 0.90) + call_chips * 2))
-                    return _build("raise", size, table, allowed,
-                                  eq=equity, po=pot_odds, msg="Value 3bet PF")
-
-            if t in ("P", "S") and equity > pot_odds + 0.05 and kf > 0.02:
-                return _build("call", None, table, allowed,
-                              eq=equity, po=pot_odds, msg="Call PF Solid Kelly")
-
-            if t == "M" and in_pos and equity > pot_odds + 0.06 and kf > 0.03:
-                return _build("call", None, table, allowed,
-                              eq=equity, po=pot_odds, msg="Call PF Pos Kelly")
-
-            return _build("fold", None, table, allowed,
-                          eq=equity, po=pot_odds, msg="Fold PF")
-
-    raw_equity = estimate_equity(hole, board, sims=700, deadline_s=deadline_s)
-    equity = update_bayesian_equity(raw_equity, hole, board, call_chips, pot, bb, blockers, wetness)
-    draw = is_draw(board, hole)
-    monster = is_monster_hand(hole, board)
-    true_monster = is_true_monster(hole, board)
-    tptk = is_top_pair_good_kicker(hole, board)
-
-    is_flop = len(board) == 3
-    is_turn = len(board) == 4
-    is_river = len(board) == 5
-    overbet = call_chips > pot
-
-    board_ranks = [c[:-1] for c in board]
-    hole_ranks = [c[:-1] for c in hole]
-    is_pair = len(hole_ranks) == 2 and hole_ranks[0] == hole_ranks[1]
-    has_made_pair = any(r in board_ranks for r in hole_ranks) or is_pair
-
-    is_underpair = False
-    over_cards = 0
-    if is_pair:
-        rank_order = "23456789TJQKA"
-        pocket_val = rank_order.find(hole_ranks[0])
-        over_cards = sum(1 for r in board_ranks if rank_order.find(r) > pocket_val)
-        if over_cards >= 1:
-            is_underpair = True
-
-    board_suits = [c[-1] for c in board]
-    has_3flush_board = any(board_suits.count(s) >= 3 for s in "shdc")
-    kf = kelly_criterion_fraction(equity, pot, call_chips, fraction=kelly_f)
+        return _build("fold", None, table, allowed, eq=equity, po=pot_odds, msg="Fold PF vs Raise")
 
     if call_chips > 0:
-        if not has_made_pair and not draw:
-            return _build("fold", None, table, allowed,
-                          eq=equity, po=pot_odds, msg="No hit / Air fold")
-
-        if draw and (call_chips > pot * 0.30 or kf <= 0.0) and equity < 0.52:
-            return _build("fold", None, table, allowed,
-                          eq=equity, po=pot_odds, msg="Weak draw stop-loss fold")
-
-        if is_pair and is_underpair and over_cards >= 1 and (call_chips > pot * 0.18 or kf < 0.05):
-            return _build("fold", None, table, allowed,
-                          eq=equity, po=pot_odds, msg="Underpair overcard fold")
-
-        if (has_3flush_board or wetness > 0.65 or call_chips > pot * 0.40) and not true_monster and kf < 0.08:
-            return _build("fold", None, table, allowed,
-                          eq=equity, po=pot_odds, msg="Facing Raise / Wet Board Non-Monster Fold")
-
-        if (is_turn or is_river) and not monster and not tptk:
-            if (has_3flush_board or is_underpair) and call_chips > pot * 0.18:
-                return _build("fold", None, table, allowed,
-                              eq=equity, po=pot_odds, msg="Dangerous board fold")
-            if call_chips > pot * 0.28 or kf < 0.06:
-                return _build("fold", None, table, allowed,
-                              eq=equity, po=pot_odds, msg="Non-monster heavy bet fold")
-
         if risk_ratio > max_risk and equity < stack_off_req:
-            return _build("fold", None, table, allowed,
-                          eq=equity, po=pot_odds, msg="Risk fold")
+            return _build("fold", None, table, allowed, eq=equity, po=pot_odds, msg="Risk fold Postflop")
 
-        if is_river and (equity < pot_odds + river_margin or kf < 0.08):
-            return _build("fold", None, table, allowed,
-                          eq=equity, po=pot_odds, msg="River fold Kelly")
+        ev_call = realized_equity * (pot + call_chips) - call_chips
+        
+        if ev_call >= 0 or realized_equity >= pot_odds:
+            if realized_equity >= stack_off_req and allowed.get("canRaise") and kf > 0.08:
+                rr = allowed.get("raiseRange") or {}
+                min_r = int(rr.get("min") or call_chips * 2)
+                max_r = int(rr.get("max") or min_r)
+                size = compute_kelly_bet_size(realized_equity, pot + call_chips, min_r, max_r, kelly_f, spr, wetness)
+                return _build("raise", size, table, allowed, eq=equity, po=pot_odds, msg="Dynamic Monster Raise")
+            return _build("call", None, table, allowed, eq=equity, po=pot_odds, msg="Dynamic Value Call")
 
-        if overbet and (equity < overbet_req or kf < 0.15):
-            return _build("fold", None, table, allowed,
-                          eq=equity, po=pot_odds, msg="Overbet fold")
+        if realized_equity >= pot_odds * mdf and kf > 0.0:
+            return _build("call", None, table, allowed, eq=equity, po=pot_odds, msg="MDF Defense Call")
 
-        if is_flop and not in_pos and monster and equity >= 0.78 and allowed.get("canRaise"):
-            rr = allowed.get("raiseRange") or {}
-            min_r = int(rr.get("min") or call_chips * 2)
-            max_r = int(rr.get("max") or min_r)
-            size = compute_kelly_bet_size(equity, pot + call_chips, min_r, max_r, kelly_f, spr, wetness)
-            return _build("raise", size, table, allowed,
-                          eq=equity, po=pot_odds, msg="OOP Flop Monster Check-Raise Kelly")
-
-        if true_monster and equity >= stack_off_req and allowed.get("canRaise"):
-            rr = allowed.get("raiseRange") or {}
-            min_r = int(rr.get("min") or call_chips * 2)
-            max_r = int(rr.get("max") or min_r)
-            size = compute_kelly_bet_size(equity, pot + call_chips, min_r, max_r, kelly_f, spr, wetness)
-            return _build("raise", size, table, allowed,
-                          eq=equity, po=pot_odds, msg="Monster Kelly Raise")
-
-        call_margin = 0.16 if (is_turn or is_river) else 0.12
-        if equity > pot_odds + call_margin and kf > 0.04:
-            return _build("call", None, table, allowed,
-                          eq=equity, po=pot_odds, msg="Call Solid Kelly")
-
-        return _build("fold", None, table, allowed,
-                      eq=equity, po=pot_odds, msg="Fold Margin Kelly")
+        return _build("fold", None, table, allowed, eq=equity, po=pot_odds, msg="Negative EV Fold")
 
     if allowed.get("canBet"):
-        if is_flop and not in_pos and monster and raw_equity >= 0.78:
-            if random.random() < 0.85 and "check" in available:
-                return _build("check", None, table, allowed,
-                              eq=raw_equity, po=0, msg="OOP Flop Monster Trap Check")
+        min_b = int((allowed.get("betRange") or {}).get("min") or max(pot // 3, 2))
+        max_b = int((allowed.get("betRange") or {}).get("max") or min_b)
+        alpha = min_b / max(pot + min_b, 1)
 
-        if true_monster and raw_equity >= 0.80:
-            br = allowed.get("betRange") or {}
-            min_b = int(br.get("min") or pot // 2 or 1)
-            max_b = int(br.get("max") or min_b)
-            size = compute_kelly_bet_size(raw_equity, pot, min_b, max_b, kelly_f, spr, wetness)
-            return _build("bet", size, table, allowed,
-                          eq=raw_equity, po=0, msg="True Monster Kelly Bet")
-
-        if raw_equity > 0.72:
-            br = allowed.get("betRange") or {}
-            min_b = int(br.get("min") or pot // 2 or 1)
-            max_b = int(br.get("max") or min_b)
-            size = compute_kelly_bet_size(raw_equity, pot, min_b, max_b, kelly_f, spr, wetness)
-            return _build("bet", size, table, allowed,
-                          eq=raw_equity, po=0, msg="Solid Value Kelly Bet")
-
-        if is_flop and in_pos and not has_3flush_board and wetness < 0.60 and (tptk or (raw_equity >= 0.42 and t in ("P", "S", "M"))):
-            if random.random() < 0.80:
-                br = allowed.get("betRange") or {}
-                min_b = int(br.get("min") or max(pot // 3, 2))
-                max_b = int(br.get("max") or min_b)
-                size = compute_dynamic_cbet_size(raw_equity, pot, min_b, max_b, in_pos, wetness, spr)
-                return _build("bet", size, table, allowed,
-                              eq=raw_equity, po=0, msg="Flop Positional C-Bet")
-
-        if is_turn and tptk and not has_3flush_board and wetness < 0.55 and raw_equity >= 0.62:
-            if random.random() < 0.85:
-                br = allowed.get("betRange") or {}
-                min_b = int(br.get("min") or max(pot // 2, 2))
-                max_b = int(br.get("max") or min_b)
-                size = compute_kelly_bet_size(raw_equity, pot, min_b, max_b, kelly_f, spr, wetness)
-                return _build("bet", size, table, allowed,
-                              eq=raw_equity, po=0, msg="Turn TPTK Dry Value Kelly Bet")
-
-        if (not has_made_pair and not draw) or is_underpair or wetness >= 0.60:
-            if "check" in available:
-                return _build("check", None, table, allowed,
-                              eq=raw_equity, po=0, msg="Air/Underpair/Wet Check")
-
-        if is_turn and not true_monster and not tptk:
-            if "check" in available:
-                return _build("check", None, table, allowed,
-                              eq=raw_equity, po=0, msg="Turn Pot Control Check")
+        if realized_equity >= alpha:
+            size = compute_dynamic_cbet_size(realized_equity, pot, min_b, max_b, in_pos, wetness, spr)
+            return _build("bet", size, table, allowed, eq=equity, po=0, msg="Dynamic EV C-Bet")
 
     if "check" in available:
-        return _build("check", None, table, allowed,
-                      eq=raw_equity, po=0, msg="Check")
+        return _build("check", None, table, allowed, eq=equity, po=0, msg="Check")
 
-    return _build("fold", None, table, allowed,
-                  eq=raw_equity, po=pot_odds, msg="Fallback")
+    return _build("fold", None, table, allowed, eq=equity, po=pot_odds, msg="Fallback Fold")
 
 if __name__ == "__main__":
     sys.exit(main())
