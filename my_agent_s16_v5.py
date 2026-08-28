@@ -1,6 +1,5 @@
 from __future__ import annotations
 import sys
-import random
 import math
 from typing import Optional
 from examples.agent import (
@@ -10,6 +9,9 @@ from examples.agent import (
 )
 
 _GLOBAL_CONTEXT = {}
+
+def clamp(x: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, x))
 
 def get_stack(table: dict) -> int:
     self_seat = table.get("selfSeatNumber")
@@ -48,25 +50,25 @@ def get_position_info(table: dict, self_seat: int) -> tuple[bool, int]:
     if btn is None:
         btn = 0
     active_seats = [
-        s for s in seats 
+        s for s in seats
         if s.get("status") == "Active" and not s.get("folded") and not s.get("isFolded")
     ]
     if not active_seats:
         return True, 1
-    
+
     all_seat_nums = [s.get("seatNumber") for s in seats if s.get("seatNumber") is not None]
     max_seats = max(all_seat_nums) + 1 if all_seat_nums else 6
-    
+
     def dist_from_btn(sn: int) -> int:
         return (sn - btn) % max_seats
 
     active_nums = [s.get("seatNumber") for s in active_seats if s.get("seatNumber") is not None]
     active_nums.sort(key=dist_from_btn)
-    
+
     n_active = len(active_nums)
     if self_seat not in active_nums:
         return False, n_active
-        
+
     pos_idx = active_nums.index(self_seat)
     in_pos = pos_idx >= (n_active // 2) or pos_idx == n_active - 1
     return in_pos, n_active
@@ -74,36 +76,36 @@ def get_position_info(table: dict, self_seat: int) -> tuple[bool, int]:
 def evaluate_board_texture(board: list) -> tuple[float, bool]:
     if len(board) < 3:
         return 0.0, False
-    
+
     rank_order = "23456789TJQKA"
     board_ranks = [c[:-1] for c in board]
     board_suits = [c[-1] for c in board]
-    
+
     is_paired = len(set(board_ranks)) < len(board_ranks)
-    
+
     suit_counts = [board_suits.count(s) for s in "shdc"]
     max_suit = max(suit_counts)
     flush_wetness = max(0.0, (max_suit - 1) / max(len(board) - 1, 1))
-    
+
     vals = sorted([rank_order.find(r) for r in board_ranks])
     conn_count = 0
     for i in range(len(vals) - 1):
-        diff = vals[i+1] - vals[i]
+        diff = vals[i + 1] - vals[i]
         if diff == 1:
             conn_count += 2
         elif diff == 2:
             conn_count += 1
-            
+
     conn_wetness = min(0.50, conn_count / max(len(vals) * 2, 1))
     paired_penalty = -0.10 if is_paired else 0.0
-    
+
     wetness = max(0.0, min(1.0, flush_wetness + conn_wetness + paired_penalty))
     return wetness, is_paired
 
 def evaluate_blockers(hole: list, board: list) -> dict[str, bool]:
     if len(hole) != 2:
         return {"nfd_blocker": False, "top_blocker": False}
-    
+
     rank_order = "23456789TJQKA"
     board_suits = [c[-1] for c in board]
     dominant_suit = None
@@ -111,20 +113,65 @@ def evaluate_blockers(hole: list, board: list) -> dict[str, bool]:
         if board_suits.count(s) >= 2:
             dominant_suit = s
             break
-            
+
     nfd_blocker = False
     if dominant_suit:
         for c in hole:
             if c[-1] == dominant_suit and c[:-1] in ("A", "K"):
                 nfd_blocker = True
                 break
-                
+
     board_ranks = [c[:-1] for c in board]
     board_max = max([rank_order.find(r) for r in board_ranks]) if board_ranks else -1
     hole_ranks = [c[:-1] for c in hole]
     top_blocker = any(rank_order.find(r) >= board_max for r in hole_ranks) if board_max >= 0 else False
-    
+
     return {"nfd_blocker": nfd_blocker, "top_blocker": top_blocker}
+
+def fast_preflop_equity(hole: list, n_active: int) -> float:
+    if len(hole) != 2:
+        return 0.50
+
+    rank_order = "23456789TJQKA"
+    r1, r2 = hole[0][:-1], hole[1][:-1]
+    s1, s2 = hole[0][-1], hole[1][-1]
+    if r1 not in rank_order or r2 not in rank_order:
+        return 0.50
+
+    v = {
+        "A": 10.0, "K": 8.0, "Q": 7.0, "J": 6.0, "T": 5.0,
+        "9": 4.5, "8": 4.0, "7": 3.5, "6": 3.0, "5": 2.5,
+        "4": 2.0, "3": 1.5, "2": 1.0
+    }
+    rv1 = rank_order.find(r1) + 2
+    rv2 = rank_order.find(r2) + 2
+    high_r = max(rv1, rv2)
+    low_r = min(rv1, rv2)
+
+    if r1 == r2:
+        score = max(5.0, v[r1] * 2.0)
+    else:
+        score = max(v[r1], v[r2])
+        if s1 == s2:
+            score += 2.0
+        gap = (high_r - low_r) - 1
+        if gap == 0:
+            score += 1.0
+        elif gap == 1:
+            score -= 1.0
+        elif gap == 2:
+            score -= 2.0
+        elif gap == 3:
+            score -= 4.0
+        else:
+            score -= 5.0
+        if low_r <= 9 and gap <= 1:
+            score += 1.0
+
+    score = clamp(score, 0.0, 20.0)
+    base = 0.33 + 0.50 * ((score / 20.0) ** 1.25)
+    multi = 1.0 / (1.0 + 0.06 * max(0, n_active - 2))
+    return clamp(base * multi, 0.25, 0.86)
 
 def is_strong_preflop_hand(hole: list, raw_equity: float) -> bool:
     if raw_equity >= 0.52:
@@ -161,13 +208,13 @@ def is_top_pair_plus_or_strong_draw(hole: list, board: list) -> bool:
     hole_vals = [rank_order.find(r) for r in hole_ranks if rank_order.find(r) >= 0]
     if not board_vals or len(hole_vals) < 2:
         return False
-    
+
     max_b = max(board_vals)
     if hole_vals[0] == hole_vals[1] and hole_vals[0] >= max_b:
         return True
     if any(v >= max_b and v in board_vals for v in hole_vals):
         return True
-    
+
     hit_count = sum(1 for v in hole_vals if v in board_vals)
     if hit_count >= 2:
         return True
@@ -191,16 +238,16 @@ def compute_geometric_bet_size(pot: int, spr: float, street_idx: int) -> float:
 
 def compute_equity_realization(in_pos: bool, wetness: float, spr: float, street_idx: int, n_active: int) -> float:
     if street_idx == 0:
-        pos_factor = 1.05 if in_pos else 0.95
-        return max(0.85, min(1.15, pos_factor))
-    
-    pos_factor = 1.10 if in_pos else 0.90
+        pos_factor = 1.02 if in_pos else 0.98
+        return clamp(pos_factor, 0.90, 1.0)
+
+    pos_factor = 1.08 if in_pos else 0.92
     wet_factor = 1.0 - (wetness * 0.12)
     spr_factor = 1.0 / (1.0 + 0.015 * min(spr, 20.0))
     street_factor = 1.0 + 0.02 * street_idx
     r0 = pos_factor * wet_factor * spr_factor * street_factor
     multiway_adj = 1.0 / math.sqrt(max(1.0, 1.0 + 0.35 * (n_active - 1)))
-    return max(0.40, min(1.25, r0 * multiway_adj))
+    return clamp(r0 * multiway_adj, 0.40, 1.0)
 
 def dynamic_kelly_fraction(stack_bb: float) -> float:
     return max(0.08, min(0.35, 1.0 / (2.0 + (max(stack_bb, 1.0) / 70.0))))
@@ -244,7 +291,7 @@ def update_bayesian_equity(raw_eq: float, call_chips: int, pot: int, blockers: d
 
     beta = call_chips / max(pot, 1)
     decay = 1.0 + (beta * likelihood_ratio * 0.55) * (1.0 + 0.30 * street_idx) * (1.0 + 0.45 * wetness)
-    
+
     if blockers.get("nfd_blocker"):
         decay *= 0.90
     if blockers.get("top_blocker"):
@@ -334,14 +381,22 @@ def decide(table: dict, deadline_s: float = 10.0,
 
     pot = int(table.get("potChips") or 0)
     call_chips = int(allowed.get("callChips") or 0)
+    call_amount = int(allowed.get("callAmount") or table.get("callAmount") or call_chips)
     stack = get_stack(table)
 
     bb = max(int(table.get("bigBlindChips") or table.get("bigBlind") or 2), 1)
-    stack_bb = stack / bb if bb else 100.0
-    spr = stack / max(pot, 1)
 
-    pot_odds = call_chips / max(pot + call_chips, 1) if call_chips else 0.0
-    mdf = 1.0 - pot_odds if pot_odds > 0 else 1.0
+    if call_amount > call_chips and call_chips > 0:
+        pot_eff = max(1, pot + 2 * call_chips - call_amount)
+        pot_odds_eff = call_chips / max(pot_eff + call_chips, 1)
+    else:
+        pot_eff = pot
+        pot_odds_eff = call_chips / max(pot + call_chips, 1) if call_chips else 0.0
+
+    stack_bb = stack / bb if bb else 100.0
+    spr = stack / max(pot_eff, 1)
+
+    mdf = 1.0 - pot_odds_eff if pot_odds_eff > 0 else 1.0
     risk_ratio = call_chips / stack if stack > 0 else 0.0
 
     in_pos, n_active = get_position_info(table, self_seat)
@@ -352,22 +407,29 @@ def decide(table: dict, deadline_s: float = 10.0,
     wetness, is_paired_board = evaluate_board_texture(board)
     blockers = evaluate_blockers(hole, board)
 
+    street_committed = int(hero.get("currentBetChips") or hero.get("currentBet") or 0)
+    eff_stack = max(1, stack + street_committed)
+    call_bb = call_chips / max(bb, 1)
+
     max_risk = dynamic_max_risk(stack_bb, spr)
     stack_off_req = dynamic_stack_off_req(stack_bb, wetness)
     kelly_f = dynamic_kelly_fraction(stack_bb)
     realization = compute_equity_realization(in_pos, wetness, spr, street_idx, n_active)
-    likelihood_ratio = get_action_line_likelihood(table, call_chips, pot, street_idx, actions=actions)
+    likelihood_ratio = get_action_line_likelihood(table, call_chips, pot_eff, street_idx, actions=actions)
 
-    sims_count = 160 if is_pf else 280
     safe_deadline = min(deadline_s, 2.0) if deadline_s else 2.0
-    try:
-        raw_equity = estimate_equity(hole, board, sims=sims_count, deadline_s=safe_deadline)
-    except Exception:
-        raw_equity = max(0.30, min(0.45, 0.38 - 0.10 * delta))
+    if is_pf:
+        raw_equity = fast_preflop_equity(hole, n_active)
+    else:
+        sims_count = 280
+        try:
+            raw_equity = estimate_equity(hole, board, sims=sims_count, deadline_s=safe_deadline)
+        except Exception:
+            raw_equity = max(0.30, min(0.45, 0.38 - 0.10 * delta))
 
-    equity = update_bayesian_equity(raw_equity, call_chips, pot, blockers, wetness, street_idx, likelihood_ratio)
+    equity = update_bayesian_equity(raw_equity, call_chips, pot_eff, blockers, wetness, street_idx, likelihood_ratio)
     realized_equity = min(0.99, equity * realization)
-    kf = kelly_criterion_fraction(realized_equity, pot, call_chips, fraction=kelly_f)
+    kf = kelly_criterion_fraction(realized_equity, pot_eff, call_chips, fraction=kelly_f)
 
     def _build_tracked(act: str, amount: Optional[int], eq: float = 0.0, po: float = 0.0, msg: str = "") -> dict:
         if is_pf:
@@ -378,111 +440,146 @@ def decide(table: dict, deadline_s: float = 10.0,
                 ctx["vpip_ema"] = vpip_ema * 0.95 + v_val * 0.05
         return _build(act, amount, table, allowed, eq=eq, po=po, msg=msg)
 
-    short_stack_threshold = 18.0 if in_pos else 14.0
+    short_stack_threshold = 12.0 + 3.5 * (1 if in_pos else 0) + 3.0 * (n_active / (n_active + 2.0))
     if is_pf and stack_bb <= short_stack_threshold:
-        dead_money_equity_bonus = pot / max(stack, 1) * 0.15
-        if (raw_equity + dead_money_equity_bonus >= 0.44) and allowed.get("canRaise"):
+        dead_money_equity_bonus = pot_eff / max(stack, 1) * (0.10 + 0.10 * (1.0 / (1.0 + math.exp(-2.0 * delta))))
+        push_req = pot_odds_eff + 0.08 * (1.0 / (1.0 + math.exp(-1.2 * (short_stack_threshold - stack_bb)))) + 0.06 * max(0.0, delta)
+        if (raw_equity + dead_money_equity_bonus >= push_req) and allowed.get("canRaise"):
             rr = allowed.get("raiseRange") or {}
-            max_r = int(rr.get("max") or stack)
+            max_r = int(rr.get("max") or stack + street_committed)
             return _build_tracked("raise", max_r, eq=equity, po=0, msg="Push short")
         if "check" in available:
             return _build_tracked("check", None, eq=equity, po=0, msg="Check short")
-        if raw_equity >= pot_odds:
-            return _build_tracked("call", None, eq=equity, po=pot_odds, msg="Call short")
-        return _build_tracked("fold", None, eq=equity, po=pot_odds, msg="Fold short")
+        if raw_equity >= pot_odds_eff:
+            return _build_tracked("call", None, eq=equity, po=pot_odds_eff, msg="Call short")
+        return _build_tracked("fold", None, eq=equity, po=pot_odds_eff, msg="Fold short")
 
     if is_pf:
+        allin_like = call_chips > 0 and (call_chips >= stack * (0.90 + 0.08 / (1.0 + math.exp(-3.0 * delta))) or (call_amount > call_chips and call_chips == stack))
+        if allin_like and ("call" in available or allowed.get("canCall")):
+            raise_pressure = math.log1p(max(0, raise_count))
+            size_pressure = math.tanh(call_bb / (12.0 + 6.0 * (1.0 / (1.0 + math.exp(-2.0 * delta)))))
+            margin = (0.10 + 0.06 * raise_pressure + 0.06 * size_pressure + 0.08 * max(0.0, delta)) * (1.0 - pot_odds_eff)
+            req_allin_eq = clamp(pot_odds_eff + margin, pot_odds_eff, 0.90)
+            tight_eq = clamp(equity - (0.08 * raise_pressure + 0.06 * size_pressure) * (1.0 - equity), 0.0, 1.0)
+            if tight_eq >= req_allin_eq or (is_strong_preflop_hand(hole, raw_equity) and equity >= pot_odds_eff):
+                return _build_tracked("call", None, eq=equity, po=pot_odds_eff, msg="All-in Call PF")
+            return _build_tracked("fold", None, eq=equity, po=pot_odds_eff, msg="All-in Fold PF")
+
         if call_chips <= bb:
-            min_open_eq = 0.46 + 0.04 * (1 if not in_pos else 0) + 0.015 * max(0, n_active - 2) + 0.02 * math.log1p(spr) + 0.25 * delta
-            min_limp_eq = min_open_eq - 0.03 - 0.01 * max(0, n_active - 3) + 0.10 * delta
-            
+            min_open_eq = 0.46 + 0.04 * (1 if not in_pos else 0) + 0.015 * max(0, n_active - 2) + 0.02 * math.log1p(spr) + 0.35 * delta
+            min_limp_eq = min_open_eq - (0.03 + 0.01 * max(0, n_active - 3)) + 0.14 * delta
+
             min_r = int((allowed.get("raiseRange") or {}).get("min") or bb * 2)
             max_r = int((allowed.get("raiseRange") or {}).get("max") or min_r)
-            open_size = compute_dynamic_open_size(raw_equity, in_pos, bb, min_r, max_r, pot)
-            
+            open_size = compute_dynamic_open_size(raw_equity, in_pos, bb, min_r, max_r, pot_eff)
+
             if (raw_equity >= min_open_eq or realized_equity >= min_open_eq) and (allowed.get("canRaise") or allowed.get("canBet")):
                 if allowed.get("canRaise"):
-                    return _build_tracked("raise", open_size, eq=equity, po=pot_odds, msg="Dynamic EV Open Raise")
+                    return _build_tracked("raise", open_size, eq=equity, po=pot_odds_eff, msg="Dynamic EV Open Raise")
                 if allowed.get("canBet"):
                     return _build_tracked("bet", open_size, eq=equity, po=0, msg="Dynamic EV Open Bet")
 
             if "check" in available:
                 return _build_tracked("check", None, eq=equity, po=0, msg="Check BB PF")
-            
+
             if raw_equity >= min_limp_eq or realized_equity >= min_limp_eq:
-                return _build_tracked("call", None, eq=equity, po=pot_odds, msg="Call Limp EV")
+                return _build_tracked("call", None, eq=equity, po=pot_odds_eff, msg="Call Limp EV")
 
-            return _build_tracked("fold", None, eq=equity, po=pot_odds, msg="Fold PF Unopened")
+            return _build_tracked("fold", None, eq=equity, po=pot_odds_eff, msg="Fold PF Unopened")
 
-        call_bb = call_chips / max(bb, 1)
-        if raise_count >= 2 or call_bb >= 4.0 or call_chips >= stack * 0.12 or risk_ratio >= 0.12:
-            req_pf = pot_odds + 0.04 * math.log1p(call_bb) + 0.03 * (1 if not in_pos else 0) + 0.01 * max(0, n_active - 2) + 0.15 * delta + 0.10 * risk_ratio
-            if (raw_equity < req_pf and equity < req_pf) and not is_strong_preflop_hand(hole, raw_equity):
-                return _build_tracked("fold", None, eq=equity, po=pot_odds, msg="3bet Anti-Blunder Fold")
+        size_gate = 2.4 + 1.2 * math.log1p(stack_bb / 25.0) + 0.8 * (1.0 / (1.0 + math.exp(-2.0 * delta)))
+        risk_gate = 0.08 + 0.10 * (stack_bb / (stack_bb + 60.0)) + 0.10 * max(0.0, delta)
 
-        if risk_ratio > max_risk and equity < stack_off_req:
-            return _build_tracked("fold", None, eq=equity, po=pot_odds, msg="Risk fold PF")
+        if raise_count >= 2 or call_bb >= size_gate or call_chips >= stack * risk_gate or risk_ratio >= risk_gate:
+            req_pf = pot_odds_eff + 0.05 * math.log1p(call_bb) + 0.03 * (1 if not in_pos else 0) + 0.01 * max(0, n_active - 2) + 0.18 * delta + 0.12 * risk_ratio
+            tight_eq = clamp(equity - (0.07 * math.log1p(max(1.0, call_bb)) + 0.05 * math.log1p(max(0, raise_count))) * (1.0 - equity), 0.0, 1.0)
+            if (tight_eq < req_pf) and not is_strong_preflop_hand(hole, raw_equity):
+                return _build_tracked("fold", None, eq=equity, po=pot_odds_eff, msg="3bet Anti-Blunder Fold")
 
-        ev_call = realized_equity * (pot + call_chips) - call_chips
-        if ev_call >= 0 or realized_equity >= pot_odds or raw_equity >= pot_odds * 0.90:
-            if (kf > 0.05 or raw_equity >= 0.62) and allowed.get("canRaise"):
+        if risk_ratio > max_risk:
+            req_risk_eq = pot_odds_eff + 0.10 * risk_ratio + 0.03 * math.log1p(max(0, raise_count)) + 0.03 * (stack_bb / (stack_bb + 50.0)) + 0.14 * delta
+            tight_eq = clamp(equity - 0.06 * risk_ratio * (1.0 - equity), 0.0, 1.0)
+            if tight_eq < req_risk_eq and realized_equity < req_risk_eq:
+                return _build_tracked("fold", None, eq=equity, po=pot_odds_eff, msg="Risk fold PF")
+
+        ev_call = realized_equity * (pot_eff + call_chips) - call_chips
+        if ev_call >= 0 or realized_equity >= pot_odds_eff or raw_equity >= pot_odds_eff * (0.82 + 0.10 * (1.0 / (1.0 + math.exp(-2.0 * delta)))):
+            if allowed.get("canRaise"):
                 rr = allowed.get("raiseRange") or {}
-                min_r = int(rr.get("min") or call_chips * 2)
-                max_r = int(rr.get("max") or min_r)
-                size = compute_dynamic_3bet_size(pot, call_chips, in_pos, realized_equity, min_r, max_r)
-                return _build_tracked("raise", size, eq=equity, po=pot_odds, msg="Dynamic Value 3bet")
-            return _build_tracked("call", None, eq=equity, po=pot_odds, msg="Dynamic Call PF")
+                min_r = int(rr.get("min") or call_amount + max(bb * 2, call_chips * 2))
+                max_r = int(rr.get("max") or (stack + street_committed))
 
-        return _build_tracked("fold", None, eq=equity, po=pot_odds, msg="Fold PF vs Raise")
+                size = compute_dynamic_3bet_size(pot_eff, call_chips, in_pos, realized_equity, min_r, max_r)
+                to_amount = int(size)
+
+                commit = to_amount / max(eff_stack, 1)
+                deep = stack_bb / (stack_bb + 55.0)
+                rer = math.log1p(max(0, raise_count - 1))
+                req_raise_eq = pot_odds_eff + (0.10 * commit + 0.08 * deep + 0.06 * rer + 0.18 * max(0.0, delta)) * (1.0 - pot_odds_eff)
+
+                tight_eq = clamp(equity - (0.06 * rer + 0.04 * deep) * (1.0 - equity), 0.0, 1.0)
+
+                if tight_eq >= req_raise_eq and (kf > 0.05 or tight_eq >= (0.58 + 0.06 * deep + 0.12 * max(0.0, delta))):
+                    return _build_tracked("raise", to_amount, eq=equity, po=pot_odds_eff, msg="Dynamic Value 3bet")
+
+            return _build_tracked("call", None, eq=equity, po=pot_odds_eff, msg="Dynamic Call PF")
+
+        return _build_tracked("fold", None, eq=equity, po=pot_odds_eff, msg="Fold PF vs Raise")
 
     if call_chips > 0:
-        beta = call_chips / max(pot, 1)
+        beta = call_chips / max(pot_eff, 1)
         rr = risk_ratio
         agg_count = total_agg
-        base_req_eq = pot_odds + 0.03 * street_idx + 0.08 * beta + 0.10 * rr + 0.15 * delta
+        base_req_eq = pot_odds_eff + 0.03 * street_idx + 0.08 * beta + 0.10 * rr + 0.15 * delta
         req_eq = base_req_eq * (1.0 + 0.10 * agg_count) * (1.0 + wetness)
 
-        is_3bet_pot = raise_count >= 2 or pot >= bb * 12
-        if (is_3bet_pot or agg_count >= 2 or beta >= 0.35 or street_idx >= 2) and not is_top_pair_plus_or_strong_draw(hole, board):
+        is_3bet_pot = raise_count >= 2 or pot_eff >= bb * 12
+        if (is_3bet_pot or agg_count >= 2 or beta >= (0.25 + 0.15 * (stack_bb / (stack_bb + 50.0))) or street_idx >= 2) and not is_top_pair_plus_or_strong_draw(hole, board):
             if equity < req_eq or realized_equity < req_eq:
-                return _build_tracked("fold", None, eq=equity, po=pot_odds, msg="Multi-Street Pressure Fold")
-        elif street_idx == 3 and (beta >= 0.50 or rr >= 0.20):
-            if equity < max(req_eq, 0.65) or realized_equity < max(req_eq, 0.65):
-                return _build_tracked("fold", None, eq=equity, po=pot_odds, msg="River Heavy Bet Fold")
+                return _build_tracked("fold", None, eq=equity, po=pot_odds_eff, msg="Multi-Street Pressure Fold")
+        elif street_idx == 3 and (beta >= (0.35 + 0.25 * (wetness / (wetness + 0.6))) or rr >= (0.12 + 0.18 * (stack_bb / (stack_bb + 50.0)))):
+            river_boost = (0.06 + 0.10 * (beta + rr) + 0.08 * max(0.0, delta)) * (1.0 - pot_odds_eff)
+            req_river = clamp(req_eq + river_boost, pot_odds_eff, 0.92)
+            if equity < req_river or realized_equity < req_river:
+                return _build_tracked("fold", None, eq=equity, po=pot_odds_eff, msg="River Heavy Bet Fold")
 
-        if risk_ratio > max_risk and equity < stack_off_req:
-            return _build_tracked("fold", None, eq=equity, po=pot_odds, msg="Risk fold Postflop")
+        if risk_ratio > max_risk:
+            req_risk_eq = pot_odds_eff + 0.10 * risk_ratio + 0.03 * math.log1p(max(0, total_agg)) + 0.03 * (stack_bb / (stack_bb + 50.0)) + 0.14 * delta
+            if equity < req_risk_eq and realized_equity < req_risk_eq:
+                return _build_tracked("fold", None, eq=equity, po=pot_odds_eff, msg="Risk fold Postflop")
 
-        ev_call = realized_equity * (pot + call_chips) - call_chips
-        
-        if ev_call >= 0 or realized_equity >= pot_odds:
+        ev_call = realized_equity * (pot_eff + call_chips) - call_chips
+
+        if ev_call >= 0 or realized_equity >= pot_odds_eff:
             if (realized_equity >= stack_off_req or raw_equity >= 0.75) and allowed.get("canRaise") and kf > 0.05:
-                rr = allowed.get("raiseRange") or {}
-                min_r = int(rr.get("min") or call_chips * 2)
-                max_r = int(rr.get("max") or min_r)
-                size = compute_kelly_bet_size(realized_equity, pot + call_chips, min_r, max_r, kelly_f, spr, wetness, street_idx)
-                return _build_tracked("raise", size, eq=equity, po=pot_odds, msg="Dynamic Monster Raise")
-            return _build_tracked("call", None, eq=equity, po=pot_odds, msg="Dynamic Value Call")
+                rrng = allowed.get("raiseRange") or {}
+                min_r = int(rrng.get("min") or call_amount + call_chips)
+                max_r = int(rrng.get("max") or (stack + street_committed))
+                size = compute_kelly_bet_size(realized_equity, pot_eff + call_chips, min_r, max_r, kelly_f, spr, wetness, street_idx)
+                return _build_tracked("raise", size, eq=equity, po=pot_odds_eff, msg="Dynamic Monster Raise")
+            return _build_tracked("call", None, eq=equity, po=pot_odds_eff, msg="Dynamic Value Call")
 
-        if call_chips <= pot * 0.35 and (realized_equity >= pot_odds * mdf or raw_equity >= pot_odds * 0.85):
-            return _build_tracked("call", None, eq=equity, po=pot_odds, msg="MDF Defense Call")
+        call_cap = 0.18 + 0.20 * (1.0 / (1.0 + math.exp(-2.0 * delta))) + 0.10 * (stack_bb / (stack_bb + 40.0))
+        if call_chips <= pot_eff * call_cap and (realized_equity >= pot_odds_eff * mdf or raw_equity >= pot_odds_eff * (0.78 + 0.12 * (1.0 / (1.0 + math.exp(-2.0 * delta))))):
+            return _build_tracked("call", None, eq=equity, po=pot_odds_eff, msg="MDF Defense Call")
 
-        return _build_tracked("fold", None, eq=equity, po=pot_odds, msg="Negative EV Fold")
+        return _build_tracked("fold", None, eq=equity, po=pot_odds_eff, msg="Negative EV Fold")
 
     if allowed.get("canBet"):
-        min_b = int((allowed.get("betRange") or {}).get("min") or max(pot // 3, 2))
+        min_b = int((allowed.get("betRange") or {}).get("min") or max(pot_eff // 3, 2))
         max_b = int((allowed.get("betRange") or {}).get("max") or min_b)
-        alpha = min_b / max(pot + min_b, 1)
+        alpha = min_b / max(pot_eff + min_b, 1)
 
         cbet_threshold = alpha if wetness < 0.45 else max(0.38, alpha + 0.08 * wetness)
         if realized_equity >= cbet_threshold or (in_pos and wetness < 0.40 and raw_equity >= 0.35):
-            size = compute_dynamic_cbet_size(realized_equity, pot, min_b, max_b, in_pos, wetness, spr, street_idx)
+            size = compute_dynamic_cbet_size(realized_equity, pot_eff, min_b, max_b, in_pos, wetness, spr, street_idx)
             return _build_tracked("bet", size, eq=equity, po=0, msg="Dynamic EV C-Bet")
 
     if "check" in available:
         return _build_tracked("check", None, eq=equity, po=0, msg="Check")
 
-    return _build_tracked("fold", None, eq=equity, po=pot_odds, msg="Fallback Fold")
+    return _build_tracked("fold", None, eq=equity, po=pot_odds_eff, msg="Fallback Fold")
 
 if __name__ == "__main__":
     sys.exit(main())

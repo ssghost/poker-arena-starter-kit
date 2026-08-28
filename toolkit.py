@@ -220,5 +220,6 @@ def force_leave(competition_id: str = "cms7hrnjg20czv7oi85cho570", max_wait_seco
 if __name__ == "__main__":
     #list_competitions()
     #force_leave(competition_id="cmt78jcn6c9a1ddft3z2to1y5")
+    #rebuy(competition_id="cmt78jcn6c9a1ddft3z2to1y5")
     check_status(competition_id="cmt78jcn6c9a1ddft3z2to1y5")
     
