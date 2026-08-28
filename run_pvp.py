@@ -1,22 +1,25 @@
 import argparse
+import importlib.util
 import json
 import math
+from pathlib import Path
 import sys
 import time
-import importlib.util
-from pathlib import Path
 import httpx
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from agent.strategy import load_strategy
+from agent.tracker import OpponentTracker
+
 CREDS_PATH = Path(".arena-credentials")
 BASE_URL = "https://arena.dev.fun/api/arena"
 BIG_BLIND = 2
 DEFAULT_HANDS = 10
-REJOIN_INTERVAL = 300  
-STATUS_REPORT_INTERVAL = 600  
+REJOIN_INTERVAL = 300
+STATUS_REPORT_INTERVAL = 600
 
 def load_agent(agent_path: str):
     p = Path(agent_path).resolve()
@@ -101,13 +104,13 @@ def calc_sharpe(deltas: list) -> float:
 def record_chunk_extremes(records: list):
     wins_in_chunk = [r for r in records if r["chip_delta"] > 0]
     losses_in_chunk = [r for r in records if r["chip_delta"] < 0]
-    
+
     top_win = max(wins_in_chunk, key=lambda x: x["chip_delta"]) if wins_in_chunk else None
     worst_loss = min(losses_in_chunk, key=lambda x: x["chip_delta"]) if losses_in_chunk else None
-    
+
     chunk_big_wins = []
     chunk_big_losses = []
-    
+
     if top_win:
         chunk_big_wins.append((top_win["hand_num"], top_win["chip_delta"]))
         if top_win.get("snapshot"):
@@ -118,7 +121,7 @@ def record_chunk_extremes(records: list):
                     "timestamp": time.time(),
                     "table_snapshot": top_win["snapshot"]
                 }, ensure_ascii=False) + "\n")
-                
+
     if worst_loss:
         chunk_big_losses.append((worst_loss["hand_num"], worst_loss["chip_delta"]))
         if worst_loss.get("snapshot"):
@@ -129,7 +132,7 @@ def record_chunk_extremes(records: list):
                     "timestamp": time.time(),
                     "table_snapshot": worst_loss["snapshot"]
                 }, ensure_ascii=False) + "\n")
-                
+
     return chunk_big_wins, chunk_big_losses
 
 def print_analytics(chunk_hands, wins, losses, pushes, net, elapsed,
@@ -156,7 +159,33 @@ def print_analytics(chunk_hands, wins, losses, pushes, net, elapsed,
     print(f"  Big Wins    : {len(big_wins)} hands (max win: {big_wins})")
     print(f"  Big Losses  : {len(big_losses)} hands (max loss: {big_losses})")
 
+def update_tracker_from_table(tracker: OpponentTracker, table: dict):
+    seats = table.get("seats") or []
+    self_seat = table.get("selfSeatNumber")
+    recent_events = table.get("recentEvents") or []
+
+    seat_actions_map = {}
+    for ev in recent_events:
+        if isinstance(ev, dict):
+            s_num = ev.get("seatNumber")
+            if s_num is not None and s_num != self_seat:
+                summary = ev.get("summary") or {}
+                act = str(summary.get("action") or ev.get("action") or "").lower()
+                street = str(summary.get("street") or ev.get("street") or "").lower()
+                if act:
+                    if s_num not in seat_actions_map:
+                        seat_actions_map[s_num] = []
+                    seat_actions_map[s_num].append({"action": act, "street": street})
+
+    for s in seats:
+        s_num = s.get("seatNumber")
+        if s_num is not None and s_num != self_seat and s_num in seat_actions_map:
+            p_id = str(s.get("playerId") or s.get("id") or s.get("name") or s_num)
+            p_name = str(s.get("name") or "")
+            tracker.record_hand_actions(p_id, p_name, seat_actions_map[s_num])
+
 def run_pvp_loop(competition_id: str, decide_fn, max_hands: int,
+                 strategy_name: str = "tag",
                  run_until_big_loss: bool = False,
                  run_until_big_win_or_loss: bool = False,
                  continuous: bool = False):
@@ -164,10 +193,20 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int,
     headers = {"x-arena-api-key": key, "Content-Type": "application/json"}
     client = httpx.Client(timeout=20.0)
 
+    strategy_profile = load_strategy(strategy_name)
+    tracker = OpponentTracker()
+
+    research_context = {
+        "strategy": strategy_profile,
+        "tracker": tracker,
+        "vpip_ema": strategy_profile.target_vpip,
+        "last_hand_id": None,
+    }
+
     try_join(client, headers, competition_id, silent=continuous)
 
     if not continuous:
-        print("[arena] hero=decide()")
+        print(f"[arena] hero=decide() | strategy={strategy_profile.name}")
         print(f"[arena] competition={competition_id}")
         print(f"[arena] blinds=1/{BIG_BLIND}")
 
@@ -203,7 +242,7 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int,
     c_river_calls = 0
     c_hand_deltas = []
     c_hand_records = []
-    
+
     consecutive_negative_sharpe_chunks = 0
 
     initial_stack = None
@@ -253,7 +292,7 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int,
             server_total_chips = participant.get("totalChips")
             bankroll_chips = participant.get("bankrollChips", 0)
             table_chips = participant.get("tableChips", 0)
-            
+
             current_chips = server_total_chips if server_total_chips is not None else (bankroll_chips + table_chips)
 
             if initial_stack is None and current_chips > 0:
@@ -328,7 +367,7 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int,
                                         c_vpip_hands, c_pfr_hands, c_river_calls, c_big_wins, c_big_losses,
                                         deltas=c_hand_deltas,
                                         chunk_title=f"Hands {hands - c_hands + 1}-{hands}")
-                        
+
                         if c_sharpe < 0:
                             consecutive_negative_sharpe_chunks += 1
                             if consecutive_negative_sharpe_chunks >= 2:
@@ -360,7 +399,9 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int,
                 if not table.get("allowedActions"):
                     continue
 
-                action = decide_fn(table, deadline_s=5)
+                update_tracker_from_table(tracker, table)
+
+                action = decide_fn(table, deadline_s=5, research_context=research_context)
                 action["tableId"] = table_id
 
                 act_name = str(action.get("action", "")).lower()
@@ -413,6 +454,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--competition-id", required=True)
     parser.add_argument("--agent", default="my_agent.py")
+    parser.add_argument("--strategy", default="tag")
     parser.add_argument("--max-hands", type=int, default=DEFAULT_HANDS)
     parser.add_argument("--run-until-big-loss", action="store_true", default=False)
     parser.add_argument("--run-until-big-win-or-loss", action="store_true", default=False)
@@ -424,6 +466,7 @@ if __name__ == "__main__":
     run_pvp_loop(
         competition_id=args.competition_id,
         decide_fn=decide_fn,
+        strategy_name=args.strategy,
         max_hands=args.max_hands,
         run_until_big_loss=args.run_until_big_loss,
         run_until_big_win_or_loss=args.run_until_big_win_or_loss,

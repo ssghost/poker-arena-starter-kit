@@ -1,0 +1,38 @@
+{
+  "name": "tag",
+  "target_vpip": 0.30,
+  "vpip_ema_alpha": 0.05,
+  "preflop": {
+    "short_stack_threshold_ip": 18.0,
+    "short_stack_threshold_oop": 14.0,
+    "open_base_eq": 0.46,
+    "open_not_ip_penalty": 0.04,
+    "open_active_player_penalty": 0.015,
+    "open_spr_factor": 0.02,
+    "open_delta_factor": 0.25,
+    "limp_offset": 0.03,
+    "min_3bet_equity": 0.62,
+    "anti_blunder_call_bb": 4.0,
+    "anti_blunder_risk_ratio": 0.12
+  },
+  "postflop": {
+    "cbet_dry_threshold": 0.45,
+    "cbet_wet_threshold": 0.38,
+    "cbet_wet_factor": 0.08,
+    "monster_raise_equity": 0.75,
+    "mdf_max_call_pot_ratio": 0.35,
+    "multi_street_pressure_base": 0.08,
+    "river_heavy_bet_pot_ratio": 0.50,
+    "river_heavy_bet_risk_ratio": 0.20,
+    "river_hard_equity_floor": 0.65
+  },
+  "risk": {
+    "kelly_fraction_min": 0.08,
+    "kelly_fraction_max": 0.35,
+    "kelly_fraction_scale": 70.0,
+    "max_risk_floor": 0.12,
+    "max_risk_cap": 0.50,
+    "stack_off_req_floor": 0.58,
+    "stack_off_req_cap": 0.96
+  }
+}
