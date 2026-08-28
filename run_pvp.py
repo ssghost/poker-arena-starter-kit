@@ -113,25 +113,8 @@ def record_chunk_extremes(records: list):
 
     if top_win:
         chunk_big_wins.append((top_win["hand_num"], top_win["chip_delta"]))
-        if top_win.get("snapshot"):
-            with open("big_win_hands.jsonl", "a", encoding="utf-8") as f:
-                f.write(json.dumps({
-                    "hand_num": top_win["hand_num"],
-                    "win_chips": top_win["chip_delta"],
-                    "timestamp": time.time(),
-                    "table_snapshot": top_win["snapshot"]
-                }, ensure_ascii=False) + "\n")
-
     if worst_loss:
         chunk_big_losses.append((worst_loss["hand_num"], worst_loss["chip_delta"]))
-        if worst_loss.get("snapshot"):
-            with open("big_loss_hands.jsonl", "a", encoding="utf-8") as f:
-                f.write(json.dumps({
-                    "hand_num": worst_loss["hand_num"],
-                    "loss_chips": worst_loss["chip_delta"],
-                    "timestamp": time.time(),
-                    "table_snapshot": worst_loss["snapshot"]
-                }, ensure_ascii=False) + "\n")
 
     return chunk_big_wins, chunk_big_losses
 
@@ -249,7 +232,6 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int,
     last_known_chips = None
     start_server_hands = None
     last_server_hands = None
-    last_table_snapshot = None
 
     current_hand_actions = {"vpip": False, "pfr": False, "river_call": False}
 
@@ -321,7 +303,6 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int,
                 c_hand_records.append({
                     "hand_num": hands,
                     "chip_delta": chip_delta,
-                    "snapshot": last_table_snapshot
                 })
 
                 if current_hand_actions["vpip"]:
@@ -393,7 +374,6 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int,
                 continue
 
             for table in tables:
-                last_table_snapshot = table
                 table_id = table.get("tableId") or table.get("id")
 
                 if not table.get("allowedActions"):
