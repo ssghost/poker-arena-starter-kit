@@ -59,6 +59,17 @@ def try_join(client, headers, competition_id, silent: bool = False):
                 print("[arena] already joined.")
             elif r.status_code == 409:
                 print("[arena] already seated (table limit).")
+            elif r.status_code == 402:
+                req = r.json().get("paymentRequirements") or {}
+                ref = req.get("paymentReference")
+                print(f"[arena] 402 Payment required (sponsored: {req.get('sponsored')}, ref: {ref})")
+                if ref:
+                    r_retry = client.post(
+                        f"{BASE_URL}/texas/join",
+                        headers=headers,
+                        json={"competitionId": competition_id, "paymentReference": ref},
+                    )
+                    print(f"[arena] retry join response: {r_retry.status_code} {r_retry.text}")
             else:
                 print(f"[arena] join response: {r.status_code} {r.text}")
     except Exception as e:
@@ -171,7 +182,8 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int,
                  strategy_name: str = "tag",
                  run_until_big_loss: bool = False,
                  run_until_big_win_or_loss: bool = False,
-                 continuous: bool = False):
+                 continuous: bool = False,
+                 tournament: bool = False):
     key = load()
     headers = {"x-arena-api-key": key, "Content-Type": "application/json"}
     client = httpx.Client(timeout=20.0)
@@ -193,9 +205,11 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int,
         print(f"[arena] competition={competition_id}")
         print(f"[arena] blinds=1/{BIG_BLIND}")
 
-    infinite_hands_mode = run_until_big_loss or run_until_big_win_or_loss or continuous
+    infinite_hands_mode = run_until_big_loss or run_until_big_win_or_loss or continuous or tournament
 
-    if continuous:
+    if tournament:
+        print("[arena] mode: tournament play (persist until eliminated or finished, no auto-leave, short-stack active) ...")
+    elif continuous:
         print("[arena] mode: continuous background (silent, report per 50 hands, stop on big loss / 2x negative Sharpe chunks) ...")
     elif run_until_big_win_or_loss:
         print("[arena] mode: run until big win or loss (>=50 chips) ...")
@@ -249,7 +263,7 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int,
                 print(f"[{time_str}] Periodic Status: {hands} hands completed | Net chips: {net:+d}")
                 last_status_report_time = now
 
-            if now - last_rejoin_time > REJOIN_INTERVAL:
+            if not tournament and (now - last_rejoin_time > REJOIN_INTERVAL):
                 leave_competition(client, headers, competition_id, silent=True)
                 time.sleep(2)
                 join_competition(client, headers, competition_id, silent=True)
@@ -283,7 +297,7 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int,
                 start_server_hands = server_total_hands if server_total_hands is not None else 0
                 last_server_hands = start_server_hands
 
-            if current_chips > 0 and current_chips < 20:
+            if not tournament and current_chips > 0 and current_chips < 20:
                 print(f"\n[ALERT] Low chips warning: stack = {current_chips} (< 20 chips).")
                 print("[ALERT] Exiting current table. Please rebuy chips manually.")
                 stop_run = True
@@ -326,7 +340,7 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int,
                 elif chip_delta < 0:
                     losses += 1
                     c_losses += 1
-                    if abs(chip_delta) >= 50 and (run_until_big_loss or run_until_big_win_or_loss or continuous):
+                    if not tournament and abs(chip_delta) >= 50 and (run_until_big_loss or run_until_big_win_or_loss or continuous):
                         print(f"\n[ALERT] Big loss detected: {chip_delta} chips at hand #{hands}.")
                         stop_run = True
                 else:
@@ -408,7 +422,8 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int,
     except KeyboardInterrupt:
         print("\n[arena] Interrupted by user.")
     finally:
-        leave_competition(client, headers, competition_id, silent=True)
+        if not tournament:
+            leave_competition(client, headers, competition_id, silent=True)
         client.close()
 
         if c_hands > 0:
@@ -439,6 +454,7 @@ if __name__ == "__main__":
     parser.add_argument("--run-until-big-loss", action="store_true", default=False)
     parser.add_argument("--run-until-big-win-or-loss", action="store_true", default=False)
     parser.add_argument("--continuous", action="store_true", default=False)
+    parser.add_argument("--tournament", action="store_true", default=False)
     args = parser.parse_args()
 
     decide_fn = load_agent(args.agent)
@@ -451,4 +467,5 @@ if __name__ == "__main__":
         run_until_big_loss=args.run_until_big_loss,
         run_until_big_win_or_loss=args.run_until_big_win_or_loss,
         continuous=args.continuous,
+        tournament=args.tournament,
     )
