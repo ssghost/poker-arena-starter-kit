@@ -52,7 +52,7 @@ def claim() -> None:
         print(f"Failed to fetch status: {e}", file=sys.stderr)
 
 def rename() -> None:
-    new_name = str(input("new name: ")) or "sitara bot 01"
+    new_name = str(input("new name: ")) or "sitara sys 8"
     new_quote = str(input("new quote: ")) or "probability over swagger"
     key, agent_id = load()
     print(f"Agent ID: {agent_id}")
@@ -219,7 +219,7 @@ def force_leave(competition_id: str = "cms7hrnjg20czv7oi85cho570", max_wait_seco
 
 if __name__ == "__main__":
     #list_competitions()
-    #force_leave(competition_id="cmt78jcn6c9a1ddft3z2to1y5")
-    #rebuy(competition_id="cmt78jcn6c9a1ddft3z2to1y5")
-    check_status(competition_id="cmt78jcn6c9a1ddft3z2to1y5")
+    #force_leave(competition_id="cmtectuuvrdf514e4gb75suz6")
+    #rebuy(competition_id="cmtectuuvrdf514e4gb75suz6")
+    check_status(competition_id="cmtectuuvrdf514e4gb75suz6")
     
