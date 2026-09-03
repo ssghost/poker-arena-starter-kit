@@ -71,7 +71,7 @@ def test_preflop_short_stack_fold_trash_hand() -> None:
 def test_preflop_reshove_commitment_protection() -> None:
     table = {
         "selfSeatNumber": 1,
-        "buttonSeatNumber": 1,
+        "buttonSeatNumber": 2,
         "boardCards": [],
         "potChips": 110,
         "bigBlindChips": 20,

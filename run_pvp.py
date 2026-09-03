@@ -16,7 +16,6 @@ from agent.tracker import OpponentTracker
 
 CREDS_PATH = Path(".arena-credentials")
 BASE_URL = "https://arena.dev.fun/api/arena"
-BIG_BLIND = 2
 DEFAULT_HANDS = 10
 REJOIN_INTERVAL = 300
 STATUS_REPORT_INTERVAL = 600
@@ -132,9 +131,10 @@ def record_chunk_extremes(records: list):
 def print_analytics(chunk_hands, wins, losses, pushes, net, elapsed,
                     vpip_hands, pfr_hands, river_calls, big_wins, big_losses,
                     deltas=None,
-                    chunk_title="50"):
+                    chunk_title="10",
+                    big_blind=2):
     hands_per_sec = chunk_hands / elapsed if elapsed > 0 else 0
-    bb100 = (net / chunk_hands * (100 / BIG_BLIND)) if chunk_hands else 0
+    bb100 = (net / chunk_hands * (100 / big_blind)) if chunk_hands else 0
     vpip_pct = (vpip_hands / chunk_hands * 100) if chunk_hands else 0
     pfr_pct = (pfr_hands / chunk_hands * 100) if chunk_hands else 0
     sharpe = calc_sharpe(deltas) if deltas else 0.0
@@ -188,6 +188,10 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int,
     headers = {"x-arena-api-key": key, "Content-Type": "application/json"}
     client = httpx.Client(timeout=20.0)
 
+    big_blind = 10 if tournament else 2
+    small_blind = 5 if tournament else 1
+    chunk_size = 10 if tournament else 50
+
     strategy_profile = load_strategy(strategy_name)
     tracker = OpponentTracker()
 
@@ -203,12 +207,12 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int,
     if not continuous:
         print(f"[arena] hero=decide() | strategy={strategy_profile.name}")
         print(f"[arena] competition={competition_id}")
-        print(f"[arena] blinds=1/{BIG_BLIND}")
+        print(f"[arena] blinds={small_blind}/{big_blind}")
 
     infinite_hands_mode = run_until_big_loss or run_until_big_win_or_loss or continuous or tournament
 
     if tournament:
-        print("[arena] mode: tournament play (persist until eliminated or finished, no auto-leave, short-stack active) ...")
+        print(f"[arena] mode: tournament play (blinds {small_blind}/{big_blind}, report per 10 hands, stop on 2x negative Sharpe chunks, auto-queue active) ...")
     elif continuous:
         print("[arena] mode: continuous background (silent, report per 50 hands, stop on big loss / 2x negative Sharpe chunks) ...")
     elif run_until_big_win_or_loss:
@@ -251,6 +255,7 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int,
 
     last_rejoin_time = time.time()
     last_status_report_time = time.time()
+    last_idle_join_time = time.time()
 
     stop_run = False
 
@@ -288,6 +293,7 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int,
             server_total_chips = participant.get("totalChips")
             bankroll_chips = participant.get("bankrollChips", 0)
             table_chips = participant.get("tableChips", 0)
+            chip_state = str(participant.get("chipState") or "").lower()
 
             current_chips = server_total_chips if server_total_chips is not None else (bankroll_chips + table_chips)
 
@@ -296,6 +302,12 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int,
                 last_known_chips = current_chips
                 start_server_hands = server_total_hands if server_total_hands is not None else 0
                 last_server_hands = start_server_hands
+
+            if tournament and (current_chips <= 0 or chip_state == "busted"):
+                print(f"\n[ALERT] Tournament Busted: stack = {current_chips}, chipState = {chip_state}.")
+                print("[ALERT] Stopping process to preserve state (single ticket policy).")
+                stop_run = True
+                break
 
             if not tournament and current_chips > 0 and current_chips < 20:
                 print(f"\n[ALERT] Low chips warning: stack = {current_chips} (< 20 chips).")
@@ -350,23 +362,25 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int,
                 last_server_hands = server_total_hands
                 last_known_chips = current_chips
 
-                if c_hands >= 50:
+                if c_hands >= chunk_size:
                     c_elapsed = time.time() - c_start
                     c_sharpe = calc_sharpe(c_hand_deltas)
                     c_big_wins, c_big_losses = record_chunk_extremes(c_hand_records)
                     big_win_hands.extend(c_big_wins)
                     big_loss_hands.extend(c_big_losses)
 
-                    if continuous:
+                    if continuous or tournament:
                         print_analytics(c_hands, c_wins, c_losses, c_pushes, c_net, c_elapsed,
                                         c_vpip_hands, c_pfr_hands, c_river_calls, c_big_wins, c_big_losses,
                                         deltas=c_hand_deltas,
-                                        chunk_title=f"Hands {hands - c_hands + 1}-{hands}")
+                                        chunk_title=f"Hands {hands - c_hands + 1}-{hands}",
+                                        big_blind=big_blind)
 
                         if c_sharpe < 0:
                             consecutive_negative_sharpe_chunks += 1
                             if consecutive_negative_sharpe_chunks >= 2:
-                                print(f"\n[ALERT] 2 consecutive 50-hand chunks had negative Sharpe Ratio. Stopping continuous mode.")
+                                mode_str = "tournament" if tournament else "continuous"
+                                print(f"\n[ALERT] 2 consecutive {chunk_size}-hand chunks had negative Sharpe Ratio. Stopping {mode_str} mode.")
                                 stop_run = True
                         else:
                             consecutive_negative_sharpe_chunks = 0
@@ -384,6 +398,9 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int,
                     break
 
             if not tables:
+                if tournament and current_chips > 0 and (now - last_idle_join_time > 30):
+                    try_join(client, headers, competition_id, silent=True)
+                    last_idle_join_time = now
                 time.sleep(1)
                 continue
 
@@ -422,28 +439,29 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int,
     except KeyboardInterrupt:
         print("\n[arena] Interrupted by user.")
     finally:
-        if not tournament:
-            leave_competition(client, headers, competition_id, silent=True)
+        leave_competition(client, headers, competition_id, silent=True)
         client.close()
 
         if c_hands > 0:
             c_big_wins, c_big_losses = record_chunk_extremes(c_hand_records)
             big_win_hands.extend(c_big_wins)
             big_loss_hands.extend(c_big_losses)
-            if continuous:
+            if continuous or tournament:
                 c_elapsed = time.time() - c_start
                 start_hand = hands - c_hands + 1
                 print_analytics(c_hands, c_wins, c_losses, c_pushes, c_net, c_elapsed,
                                 c_vpip_hands, c_pfr_hands, c_river_calls, c_big_wins, c_big_losses,
                                 deltas=c_hand_deltas,
-                                chunk_title=f"Final Partial (Hands {start_hand}-{hands})")
+                                chunk_title=f"Final Partial (Hands {start_hand}-{hands})",
+                                big_blind=big_blind)
 
         if not continuous or hands > 0:
             elapsed = time.time() - start
             print_analytics(hands, wins, losses, pushes, net, elapsed,
                             vpip_hands, pfr_hands, river_calls, big_win_hands, big_loss_hands,
                             deltas=hand_deltas,
-                            chunk_title="Total")
+                            chunk_title="Total",
+                            big_blind=big_blind)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

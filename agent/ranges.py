@@ -62,6 +62,25 @@ RANGE_SB_OPEN: Set[str] = {
     "KQo", "KJo", "KTo", "QJo", "QTo", "JTo"
 }
 
+RANGE_HU_OPEN: Set[str] = RANGE_BTN_OPEN | {
+    "A4o", "A3o", "A2o",
+    "K8o", "K7o", "K6o", "K5o", "K4o", "K3o", "K2o",
+    "Q8o", "Q7o", "Q6o", "Q5o", "Q4o", "Q3o", "Q2o",
+    "J8o", "J7o", "J6o", "J5o", "J4o", "J3o", "J2o",
+    "T8o", "T7o", "T6o", "T5o",
+    "97o", "96o", "95o",
+    "87o", "86o", "85o",
+    "76o", "75o", "65o", "64o", "54o", "53o",
+    "Q3s", "Q2s",
+    "J5s", "J4s", "J3s", "J2s",
+    "T6s", "T5s", "T4s", "T3s", "T2s",
+    "95s", "94s", "93s", "92s",
+    "85s", "84s", "83s", "82s",
+    "74s", "73s", "72s",
+    "63s", "62s",
+    "52s", "42s", "32s"
+}
+
 RANGE_PREMIUM_3BET: Set[str] = {
     "AA", "KK", "QQ", "JJ", "AKs", "AKo", "AQs"
 }
@@ -81,7 +100,21 @@ def is_in_open_range(hole: list, position_idx: int, total_active: int) -> bool:
     canonical = get_canonical_hand(hole)
     if not canonical:
         return False
-    if position_idx == total_active - 1:
+    if total_active <= 2:
+        target_range = RANGE_HU_OPEN
+    elif total_active == 3:
+        if position_idx == total_active - 1 or position_idx == 0:
+            target_range = RANGE_BTN_OPEN
+        else:
+            target_range = RANGE_SB_OPEN
+    elif total_active == 4:
+        if position_idx == total_active - 1:
+            target_range = RANGE_BTN_OPEN
+        elif position_idx == total_active - 2:
+            target_range = RANGE_CO_OPEN
+        else:
+            target_range = RANGE_MP_OPEN
+    elif position_idx == total_active - 1:
         target_range = RANGE_BTN_OPEN
     elif position_idx == total_active - 2:
         target_range = RANGE_CO_OPEN

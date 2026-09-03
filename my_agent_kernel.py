@@ -71,7 +71,8 @@ def get_position_info(table: dict, self_seat: int) -> tuple[bool, int, int]:
     max_seats = max(all_seat_nums) + 1 if all_seat_nums else 6
 
     def dist_from_btn(sn: int) -> int:
-        return (sn - btn) % max_seats
+        d = (sn - btn) % max_seats
+        return max_seats if d == 0 else d
 
     active_nums = [s.get("seatNumber") for s in active_seats if s.get("seatNumber") is not None]
     active_nums.sort(key=dist_from_btn)
@@ -79,6 +80,11 @@ def get_position_info(table: dict, self_seat: int) -> tuple[bool, int, int]:
     n_active = len(active_nums)
     if self_seat not in active_nums:
         return False, n_active, 0
+
+    if n_active == 2:
+        in_pos = (self_seat == btn)
+        pos_idx = 1 if in_pos else 0
+        return in_pos, 2, pos_idx
 
     pos_idx = active_nums.index(self_seat)
     in_pos = pos_idx >= (n_active // 2) or pos_idx == n_active - 1
@@ -187,9 +193,9 @@ def compute_dynamic_cbet_size(equity: float, pot: int, min_b: int, max_b: int, i
 
     if target >= int(max_b * 0.65):
         if equity >= 0.70:
-            target = max_b  
+            target = max_b
         else:
-            target = min(target, max(min_b, int(max_b * 0.35)))  
+            target = min(target, max(min_b, int(max_b * 0.35)))
 
     return min(max_b, max(min_b, target))
 
@@ -225,7 +231,7 @@ def decide(table: dict, deadline_s: float = 10.0,
         pot_eff = pot
         pot_odds_eff = call_chips / max(pot + call_chips, 1) if call_chips else 0.0
 
-    bb = max(int(table.get("bigBlindChips") or table.get("bigBlind") or 2), 1)
+    bb = max(int(table.get("bigBlindChips") or table.get("bigBlind") or 10), 1)
     stack_bb = stack / bb if bb else 100.0
     spr = stack / max(pot_eff, 1)
 
