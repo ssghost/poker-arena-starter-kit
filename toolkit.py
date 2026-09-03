@@ -217,9 +217,44 @@ def force_leave(competition_id: str = "cms7hrnjg20czv7oi85cho570", max_wait_seco
     print(f"[Force Leave] Timeout after {max_wait_seconds}s. Player might still be in hand.", file=sys.stderr)
     return False
 
+def check_tournament_tickets() -> list[dict]:
+    key, agent_id = load()
+    headers = {"x-arena-api-key": key, "Content-Type": "application/json"}
+    url = f"{BASE_URL}/agent/sponsor-tickets"
+    print(f"[Tournament Tickets] Checking tickets for Agent ID: {agent_id}")
+
+    try:
+        response = httpx.get(url, headers=headers, timeout=10.0)
+        response.raise_for_status()
+        data = response.json()
+        tickets = data.get("tickets", [])
+
+        available_tickets = [
+            t for t in tickets
+            if t.get("status") == "available" and not t.get("consumedByAgent")
+        ]
+
+        print(f"Total Tickets: {len(tickets)} | Available: {len(available_tickets)}")
+        for idx, ticket in enumerate(available_tickets, start=1):
+            t_id = ticket.get("id", "N/A")
+            season_num = ticket.get("seasonNumber", "N/A")
+            season_status = ticket.get("seasonStatus", "N/A")
+            template_name = ticket.get("templateName", "Tournament")
+            print(f"[{idx}] Ticket ID: {t_id} | Season: {season_num} ({season_status}) | Template: {template_name}")
+
+        return available_tickets
+
+    except httpx.HTTPStatusError as e:
+        print(f"HTTP Error {e.response.status_code}: {e.response.text}", file=sys.stderr)
+        return []
+    except Exception as e:
+        print(f"Failed to fetch tickets: {e}", file=sys.stderr)
+        return []
+
 if __name__ == "__main__":
     #list_competitions()
     #force_leave(competition_id="cmtectuuvrdf514e4gb75suz6")
     #rebuy(competition_id="cmtectuuvrdf514e4gb75suz6")
-    check_status(competition_id="cmtectuuvrdf514e4gb75suz6")
+    #check_status(competition_id="cmtectuuvrdf514e4gb75suz6")
+    check_tournament_tickets() 
     
