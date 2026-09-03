@@ -180,10 +180,17 @@ def compute_dynamic_cbet_size(equity: float, pot: int, min_b: int, max_b: int, i
     base_size = min(0.70, max(0.20, base_ratio + edge_ratio + wet_ratio + spr_adjust))
     geom_s = compute_geometric_bet_size(pot, spr, street_idx)
     if equity >= 0.65:
-        ratio = max(base_size, min(1.3, geom_s))
+        ratio = max(base_size, min(0.70, geom_s))
     else:
         ratio = base_size
     target = int(pot * ratio)
+
+    if target >= int(max_b * 0.65):
+        if equity >= 0.70:
+            target = max_b  
+        else:
+            target = min(target, max(min_b, int(max_b * 0.35)))  
+
     return min(max_b, max(min_b, target))
 
 def decide(table: dict, deadline_s: float = 10.0,
@@ -252,10 +259,12 @@ def decide(table: dict, deadline_s: float = 10.0,
         strategy.risk.kelly_fraction_min,
         min(strategy.risk.kelly_fraction_max, 1.0 / (2.0 + (max(stack_bb, 1.0) / strategy.risk.kelly_fraction_scale)))
     )
-    max_risk = max(
+    base_max_risk = max(
         strategy.risk.max_risk_floor,
         min(strategy.risk.max_risk_cap, 1.0 / (1.8 + 0.12 * spr + 0.008 * max(stack_bb, 1.0)))
     )
+    stack_risk_factor = max(0.40, min(1.0, stack_bb / 20.0)) if stack_bb < 20.0 else 1.0
+    max_risk = base_max_risk * stack_risk_factor
     stack_off_req = min(
         strategy.risk.stack_off_req_cap,
         max(strategy.risk.stack_off_req_floor, 0.50 + 0.45 * (max(stack_bb, 1.0) / (max(stack_bb, 1.0) + 35.0)) + 0.04 * texture.wetness)
@@ -286,15 +295,27 @@ def decide(table: dict, deadline_s: float = 10.0,
 
     short_stack_threshold = strategy.preflop.short_stack_threshold_ip if in_pos else strategy.preflop.short_stack_threshold_oop
     if is_pf and stack_bb <= short_stack_threshold:
-        dead_money_equity_bonus = pot_eff / max(stack, 1) * 0.15
-        if (raw_equity + dead_money_equity_bonus >= 0.44) and allowed.get("canRaise"):
+        dead_money_equity_bonus = (pot_eff / max(stack, 1)) * 0.15
+        shove_threshold = 0.48 - dead_money_equity_bonus
+
+        if "check" in available:
+            if (is_in_3bet_range(hole) or raw_equity >= 0.58) and allowed.get("canRaise"):
+                rr = allowed.get("raiseRange") or {}
+                max_r = int(rr.get("max") or stack)
+                return _build_tracked("raise", max_r, eq=equity, po=0, msg="Push short")
+            return _build_tracked("check", None, eq=equity, po=0, msg="Check short")
+
+        is_facing_raise = call_chips > bb
+        in_range = is_in_3bet_range(hole) if is_facing_raise else is_in_open_range(hole, pos_idx, n_active)
+        req_eq = 0.52 if is_facing_raise else shove_threshold
+
+        can_shove = (in_range or raw_equity >= req_eq) and allowed.get("canRaise")
+        if can_shove:
             rr = allowed.get("raiseRange") or {}
             max_r = int(rr.get("max") or stack)
             return _build_tracked("raise", max_r, eq=equity, po=0, msg="Push short")
-        if "check" in available:
-            return _build_tracked("check", None, eq=equity, po=0, msg="Check short")
-        if raw_equity >= pot_odds_eff:
-            return _build_tracked("call", None, eq=equity, po=pot_odds_eff, msg="Call short")
+        if not allowed.get("canRaise") and raw_equity >= pot_odds_eff:
+            return _build_tracked("call", None, eq=equity, po=pot_odds_eff, msg="Call all-in short")
         return _build_tracked("fold", None, eq=equity, po=pot_odds_eff, msg="Fold short")
 
     if is_pf:
@@ -348,6 +369,10 @@ def decide(table: dict, deadline_s: float = 10.0,
                 size = compute_dynamic_3bet_size(pot_eff, call_chips, in_pos, realized_equity, min_r, max_r)
                 to_amount = size
                 commit = to_amount / max(stack + to_amount, 1)
+                if commit >= 0.35 and (realized_equity >= 0.45 or is_in_3bet_range(hole)):
+                    size = max_r
+                    to_amount = size
+                    commit = 1.0
                 req_eq_jam = pot_odds_eff + 0.12 * commit + 0.03 * raise_count + 0.15 * delta
                 if commit < 0.20 or raw_equity >= req_eq_jam or realized_equity >= req_eq_jam or is_in_3bet_range(hole):
                     return _build_tracked("raise", size, eq=equity, po=pot_odds_eff, msg="Dynamic Value 3bet")
