@@ -42,7 +42,7 @@ def load():
         sys.exit(1)
     return json.loads(CREDS_PATH.read_text())["apiKey"]
 
-def try_join(client, headers, competition_id, silent: bool = False):
+def try_join(client, headers, competition_id, silent: bool = False) -> bool:
     if not silent:
         print("[arena] attempting to join competition...")
     try:
@@ -50,30 +50,112 @@ def try_join(client, headers, competition_id, silent: bool = False):
             f"{BASE_URL}/texas/join",
             headers=headers,
             json={"competitionId": competition_id},
+            timeout=15.0,
         )
-        if not silent:
-            if r.status_code == 200:
-                print("[arena] Joined the competition.")
-            elif r.status_code == 400 and "already" in r.text.lower():
-                print("[arena] already joined.")
-            elif r.status_code == 409:
-                print("[arena] already seated (table limit).")
-            elif r.status_code == 402:
-                req = r.json().get("paymentRequirements") or {}
-                ref = req.get("paymentReference")
-                print(f"[arena] 402 Payment required (sponsored: {req.get('sponsored')}, ref: {ref})")
-                if ref:
+        if r.status_code == 200:
+            if not silent:
+                print("[arena] Joined the competition / queue.")
+            return True
+        elif r.status_code == 400 and "already" in r.text.lower():
+            if not silent:
+                print("[arena] Already joined competition.")
+            return True
+        elif r.status_code == 409:
+            if not silent:
+                print("[arena] Already seated (table limit).")
+            return True
+        elif r.status_code == 402:
+            req = r.json().get("paymentRequirements") or {}
+            ref = req.get("paymentReference")
+            sponsored = req.get("sponsored", False)
+            purpose = str(req.get("purpose") or "entry").lower()
+
+            if purpose == "rebuy":
+                print("\n[ALERT] 402 Rebuy detected. Auto-rebuy is strictly prohibited by single-ticket policy.")
+                return False
+
+            if not sponsored:
+                print("[arena] Entry requires unsponsored payment. Aborting to protect funds.")
+                return False
+
+            sponsor_info = req.get("sponsor") or {}
+            if not silent:
+                print(f"[arena] 402 Sponsored entry detected (ticket: {sponsor_info.get('id')}, ref: {ref})")
+
+            if ref:
+                chain = req.get("chain", "monad")
+                to_addr = req.get("to")
+                amount = req.get("amount", "0.01")
+
+                transfer_payload = {
+                    "chain": chain,
+                    "to": to_addr,
+                    "amount": str(amount),
+                    "paymentReference": ref,
+                }
+
+                try:
+                    transfer_resp = client.post(
+                        f"{BASE_URL}/agent/wallet/transfer/native",
+                        headers=headers,
+                        json=transfer_payload,
+                        timeout=30.0,
+                    )
+                except Exception as e:
+                    if not silent:
+                        print(f"[arena] Wallet transfer error: {e}")
+                    return False
+
+                if transfer_resp.status_code != 200:
+                    if not silent:
+                        print(f"[arena] Wallet transfer failed ({transfer_resp.status_code}): {transfer_resp.text}")
+                    return False
+
+                if not silent:
+                    print("[arena] Wallet transfer submitted. Retrying join...")
+
+                max_attempts = 30
+                for attempt in range(1, max_attempts + 1):
+                    time.sleep(3)
                     r_retry = client.post(
                         f"{BASE_URL}/texas/join",
                         headers=headers,
                         json={"competitionId": competition_id, "paymentReference": ref},
+                        timeout=15.0,
                     )
-                    print(f"[arena] retry join response: {r_retry.status_code} {r_retry.text}")
-            else:
+                    if r_retry.status_code == 200:
+                        if not silent:
+                            print(f"[arena] Joined competition after settlement (attempt {attempt}).")
+                        return True
+                    elif r_retry.status_code == 400 and "already" in r_retry.text.lower():
+                        if not silent:
+                            print("[arena] Already joined competition.")
+                        return True
+                    elif r_retry.status_code == 409:
+                        if not silent:
+                            print("[arena] Already seated (table limit).")
+                        return True
+
+                    retry_data = r_retry.json() if "application/json" in r_retry.headers.get("content-type", "") else {}
+                    p_status = (retry_data.get("paymentRequirements") or {}).get("paymentStatus", "")
+                    if not silent:
+                        print(f"[arena] Settlement waiting (attempt {attempt}/{max_attempts}, status: {p_status or r_retry.status_code})...")
+
+                    if p_status not in ("pending", "signing", "settling", "waiting_for_settlement") and r_retry.status_code != 402:
+                        print(f"[arena] Unexpected settlement response: {r_retry.status_code} {r_retry.text}")
+                        return False
+
+                print("[arena] Settlement timed out.")
+                return False
+        else:
+            if not silent:
                 print(f"[arena] join response: {r.status_code} {r.text}")
+            return False
     except Exception as e:
         if not silent:
             print(f"[arena] join failed: {e}")
+        return False
+    return False
 
 def leave_competition(client, headers, competition_id, silent: bool = True):
     try:
@@ -202,12 +284,36 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int,
         "last_hand_id": None,
     }
 
-    try_join(client, headers, competition_id, silent=continuous)
-
     if not continuous:
         print(f"[arena] hero=decide() | strategy={strategy_profile.name}")
         print(f"[arena] competition={competition_id}")
         print(f"[arena] blinds={small_blind}/{big_blind}")
+
+    is_enrolled = False
+    try:
+        check_resp = client.get(
+            f"{BASE_URL}/texas/pending-actions",
+            params={"competitionId": competition_id},
+            headers=headers,
+            timeout=10.0,
+        )
+        if check_resp.status_code == 200:
+            part = check_resp.json().get("participant") or {}
+            existing_chips = part.get("totalChips", 0)
+            if existing_chips > 0:
+                print(f"[arena] Found active participation: {existing_chips} chips. Resuming.")
+                is_enrolled = True
+    except Exception:
+        pass
+
+    if not is_enrolled:
+        joined = try_join(client, headers, competition_id, silent=continuous)
+        if not joined:
+            print("[arena] Entry verification failed. Aborting process to protect tickets.")
+            client.close()
+            return
+    else:
+        try_join(client, headers, competition_id, silent=True)
 
     infinite_hands_mode = run_until_big_loss or run_until_big_win_or_loss or continuous or tournament
 
@@ -286,7 +392,11 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int,
                 time.sleep(1)
                 continue
 
-            participant = data.get("participant") or {}
+            participant = data.get("participant")
+            if not participant:
+                time.sleep(1)
+                continue
+
             tables = data.get("tables") or []
 
             server_total_hands = participant.get("totalHands")
@@ -303,7 +413,13 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int,
                 start_server_hands = server_total_hands if server_total_hands is not None else 0
                 last_server_hands = start_server_hands
 
-            if tournament and (current_chips <= 0 or chip_state == "busted"):
+            is_busted = (chip_state == "busted") or (
+                initial_stack is not None
+                and current_chips <= 0
+                and chip_state != "locked_in_play"
+            )
+
+            if tournament and is_busted:
                 print(f"\n[ALERT] Tournament Busted: stack = {current_chips}, chipState = {chip_state}.")
                 print("[ALERT] Stopping process to preserve state (single ticket policy).")
                 stop_run = True
@@ -398,7 +514,7 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int,
                     break
 
             if not tables:
-                if tournament and current_chips > 0 and (now - last_idle_join_time > 30):
+                if tournament and (current_chips > 0 or initial_stack is not None) and (now - last_idle_join_time > 30):
                     try_join(client, headers, competition_id, silent=True)
                     last_idle_join_time = now
                 time.sleep(1)
@@ -439,7 +555,7 @@ def run_pvp_loop(competition_id: str, decide_fn, max_hands: int,
     except KeyboardInterrupt:
         print("\n[arena] Interrupted by user.")
     finally:
-        leave_competition(client, headers, competition_id, silent=True)
+        leave_competition(client, headers, competition_id, silent=False)
         client.close()
 
         if c_hands > 0:

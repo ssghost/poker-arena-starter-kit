@@ -110,7 +110,11 @@ def check_status(competition_id: str = "cms7hrnjg20czv7oi85cho570") -> None:
         response.raise_for_status()
         data = response.json()
 
-        participant = data.get("participant", {})
+        participant = data.get("participant") or {}
+        if not participant:
+            print(f"[Status Check] Competition: {competition_id}")
+            print(" Status: Not joined yet / Registration pending settlement.")
+            return
         chip_state = participant.get("chipState", "unknown")
         total_chips = participant.get("totalChips", 0)
 
@@ -251,10 +255,96 @@ def check_tournament_tickets() -> list[dict]:
         print(f"Failed to fetch tickets: {e}", file=sys.stderr)
         return []
 
+def rebuy_tournament(competition_id: str) -> bool:
+    key, _ = load()
+    headers = {"x-arena-api-key": key, "Content-Type": "application/json"}
+
+    status_url = f"{BASE_URL}/texas/rebuy-status?competitionId={competition_id}"
+    try:
+        status_resp = httpx.get(status_url, headers=headers, timeout=10.0)
+        status_resp.raise_for_status()
+        status_data = status_resp.json()
+
+        if not status_data.get("canRebuyNow", False):
+            print(f"[Tournament Rebuy] Unavailable: {status_data.get('cannotRebuyReason')}")
+            return False
+    except Exception as e:
+        print(f"[Tournament Rebuy] Rebuy status check failed: {e}", file=sys.stderr)
+        return False
+
+    rebuy_url = f"{BASE_URL}/texas/rebuy"
+    payload = {"competitionId": competition_id}
+
+    print(f"[Tournament Rebuy] Initiating rebuy for competition: {competition_id}...")
+    try:
+        r = httpx.post(rebuy_url, headers=headers, json=payload, timeout=15.0)
+        if r.status_code == 200:
+            data = r.json()
+            participant = data.get("participant") or {}
+            print(f"[Tournament Rebuy] Success! State: {participant.get('chipState')} | Total Chips: {participant.get('totalChips')}")
+            return True
+        elif r.status_code == 402:
+            req = r.json().get("paymentRequirements") or {}
+            ref = req.get("paymentReference")
+            sponsored = req.get("sponsored", False)
+            sponsor_info = req.get("sponsor") or {}
+
+            if not sponsored:
+                print("[Tournament Rebuy] Aborted: Payment is not sponsored. Protecting wallet balance.")
+                return False
+
+            print(f"[Tournament Rebuy] Sponsored ticket detected (Ticket ID: {sponsor_info.get('id')}, ref: {ref})")
+            if not ref:
+                print("[Tournament Rebuy] Failed: Missing paymentReference in 402 response.")
+                return False
+
+            chain = req.get("chain", "monad")
+            to_addr = req.get("to")
+            amount = req.get("amount", "0.01")
+            transfer_payload = {
+                "chain": chain,
+                "to": to_addr,
+                "amount": str(amount),
+                "paymentReference": ref,
+            }
+            transfer_resp = httpx.post(
+                f"{BASE_URL}/agent/wallet/transfer/native",
+                headers=headers,
+                json=transfer_payload,
+                timeout=30.0,
+            )
+            if transfer_resp.status_code != 200:
+                print(f"[Tournament Rebuy] Transfer failed ({transfer_resp.status_code}): {transfer_resp.text}")
+                return False
+
+            print("[Tournament Rebuy] Transfer submitted. Retrying rebuy...")
+            payload["paymentReference"] = ref
+            max_attempts = 20
+            for attempt in range(1, max_attempts + 1):
+                time.sleep(3)
+                retry_resp = httpx.post(rebuy_url, headers=headers, json=payload, timeout=15.0)
+                if retry_resp.status_code == 200:
+                    data = retry_resp.json()
+                    participant = data.get("participant") or {}
+                    print(f"[Tournament Rebuy] Settlement complete. State: {participant.get('chipState')} | Total Chips: {participant.get('totalChips')}")
+                    return True
+
+                retry_data = retry_resp.json() if "application/json" in retry_resp.headers.get("content-type", "") else {}
+                p_status = (retry_data.get("paymentRequirements") or {}).get("paymentStatus", "")
+                print(f"[Tournament Rebuy] Waiting for ticket settlement (attempt {attempt}/{max_attempts}, status: {p_status or retry_resp.status_code})...")
+
+                if p_status not in ("pending", "signing", "settling", "waiting_for_settlement") and retry_resp.status_code != 402:
+                    print(f"[Tournament Rebuy] Unexpected response: {retry_resp.status_code} {retry_resp.text}")
+                    return False
+
+            print("[Tournament Rebuy] Settlement timed out.")
+            return False
+        else:
+            print(f"{r.status_code} {r.text}")
+            return False
+    except Exception as e:
+        print(f"[Tournament Rebuy] Execution failed: {e}", file=sys.stderr)
+        return False
+
 if __name__ == "__main__":
-    #list_competitions()
-    #force_leave(competition_id="cmtectuuvrdf514e4gb75suz6")
-    #rebuy(competition_id="cmtectuuvrdf514e4gb75suz6")
-    #check_status(competition_id="cmtectuuvrdf514e4gb75suz6")
-    check_tournament_tickets() 
-    
+    check_status(competition_id="cmtlk922v0mtf7njb5z4rym96")
